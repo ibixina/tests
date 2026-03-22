@@ -1,0 +1,601 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>3D Paper Receipt</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #e5e5e5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  overflow: hidden;
+}
+canvas#glCanvas {
+  cursor: grab;
+  touch-action: none;
+}
+canvas#glCanvas:active { cursor: grabbing; }
+.instruction {
+  margin-top: 20px;
+  color: #999;
+  font-size: 14px;
+  letter-spacing: 0.5px;
+  user-select: none;
+}
+</style>
+</head>
+<body>
+<canvas id="glCanvas" width="800" height="700"></canvas>
+<p class="instruction">Grab and drag the receipt</p>
+
+<script>
+(() => {
+  const canvas = document.getElementById('glCanvas');
+  const gl = canvas.getContext('webgl', { antialias: true, alpha: false });
+  if (!gl) { alert('WebGL not supported'); return; }
+
+  // ─── Receipt Texture ───────────────────────────────────────────
+  function createReceiptTexture() {
+    const texCanvas = document.createElement('canvas');
+    const W = 512, H = 900;
+    texCanvas.width = W; texCanvas.height = H;
+    const ctx = texCanvas.getContext('2d');
+
+    ctx.fillStyle = '#f5f2e8';
+    ctx.fillRect(0, 0, W, H);
+
+    for (let i = 0; i < 12000; i++) {
+      ctx.fillStyle = `rgba(0,0,0,${Math.random() * 0.015})`;
+      ctx.fillRect(Math.random() * W, Math.random() * H, 1, 1);
+    }
+
+    ctx.font = 'bold 22px "Courier New", monospace';
+    ctx.fillStyle = '#1a1a1a';
+    ctx.textAlign = 'center';
+    ctx.fillText('THE FLORNRM SHOP', W / 2, 50);
+
+    ctx.font = '14px "Courier New", monospace';
+    ctx.fillText('42 Mesh Lane, WebGL City', W / 2, 80);
+    ctx.fillText('Tel: (555) 042-1337', W / 2, 100);
+
+    ctx.textAlign = 'left';
+    ctx.font = '14px "Courier New", monospace';
+    ctx.fillText('Date: 2026-02-23  14:17', 30, 140);
+    ctx.fillText('Order: #00382', 30, 162);
+
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath(); ctx.moveTo(30, 185); ctx.lineTo(W - 30, 185); ctx.stroke();
+    ctx.setLineDash([]);
+
+    const items = [
+      ['Vertex Shader', '$4.20'],
+      ['Fragment Shader', '$3.50'],
+      ['Normal Map', '$2.80'],
+      ['UV Unwrap', '$1.50'],
+      ['Cloth Simulation', '$6.00']
+    ];
+    ctx.font = '14px "Courier New", monospace';
+    let y = 215;
+    for (const [name, price] of items) {
+      ctx.textAlign = 'left';
+      ctx.fillText(name, 30, y);
+      ctx.textAlign = 'right';
+      ctx.fillText(price, W - 30, y);
+      y += 28;
+    }
+
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath(); ctx.moveTo(30, y + 8); ctx.lineTo(W - 30, y + 8); ctx.stroke();
+    ctx.setLineDash([]);
+
+    y += 40;
+    ctx.textAlign = 'left'; ctx.fillText('Subtotal', 30, y);
+    ctx.textAlign = 'right'; ctx.fillText('$18.00', W - 30, y);
+    y += 26;
+    ctx.textAlign = 'left'; ctx.fillText('Tax (8%)', 30, y);
+    ctx.textAlign = 'right'; ctx.fillText('$1.44', W - 30, y);
+
+    y += 14;
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(30, y); ctx.lineTo(W - 30, y); ctx.stroke();
+    ctx.lineWidth = 1;
+
+    y += 28;
+    ctx.font = 'bold 16px "Courier New", monospace';
+    ctx.textAlign = 'left'; ctx.fillText('TOTAL', 30, y);
+    ctx.textAlign = 'right'; ctx.fillText('$19.44', W - 30, y);
+
+    ctx.font = '13px "Courier New", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('Thank you for visiting!', W / 2, H - 50);
+    ctx.font = '11px "Courier New", monospace';
+    ctx.fillText('http://github.com/flornkm', W / 2, H - 30);
+
+    return texCanvas;
+  }
+
+  // ─── Shader sources ──────────────────────────────────────────
+  const vsSource = `
+    attribute vec3 aPos;
+    attribute vec2 aUV;
+    attribute vec3 aNormal;
+    uniform mat4 uMVP;
+    uniform mat4 uModel;
+    varying vec2 vUV;
+    varying vec3 vNormal;
+    varying vec3 vWorldPos;
+    void main() {
+      gl_Position = uMVP * vec4(aPos, 1.0);
+      vUV = aUV;
+      vNormal = mat3(uModel) * aNormal;
+      vWorldPos = (uModel * vec4(aPos, 1.0)).xyz;
+    }
+  `;
+  const fsSource = `
+    precision mediump float;
+    varying vec2 vUV;
+    varying vec3 vNormal;
+    varying vec3 vWorldPos;
+    uniform sampler2D uTex;
+    uniform vec3 uLightDir;
+    uniform vec3 uEye;
+    void main() {
+      vec3 baseColor = texture2D(uTex, vUV).rgb;
+      vec3 n = normalize(vNormal);
+      vec3 l = normalize(uLightDir);
+      float diff = max(dot(n, l), 0.0);
+      float amb = 0.35;
+      vec3 v = normalize(uEye - vWorldPos);
+      vec3 h = normalize(l + v);
+      float spec = pow(max(dot(n, h), 0.0), 16.0) * 0.15;
+      float shade = amb + diff * 0.55 + spec;
+      float edge = 1.0 - pow(abs(dot(n, v)), 0.6) * 0.25;
+      vec3 col = baseColor * shade * edge;
+      col = pow(col, vec3(1.0 / 2.2));
+      gl_FragColor = vec4(col, 1.0);
+    }
+  `;
+
+  const gridFS = `
+    precision mediump float;
+    varying vec2 vUV;
+    varying vec3 vNormal;
+    varying vec3 vWorldPos;
+    uniform sampler2D uTex;
+    uniform vec3 uLightDir;
+    uniform vec3 uEye;
+    void main() {
+      vec4 tc = texture2D(uTex, vUV);
+      if (tc.a < 0.5) discard;
+      vec3 baseColor = tc.rgb;
+      vec3 n = normalize(vNormal);
+      vec3 l = normalize(uLightDir);
+      float diff = max(dot(n, l), 0.0);
+      float amb = 0.35;
+      vec3 v = normalize(uEye - vWorldPos);
+      vec3 h = normalize(l + v);
+      float spec = pow(max(dot(n, h), 0.0), 16.0) * 0.15;
+      float shade = amb + diff * 0.55 + spec;
+      float edge = 1.0 - pow(abs(dot(n, v)), 0.6) * 0.25;
+      vec3 col = baseColor * shade * edge;
+      col = pow(col, vec3(1.0 / 2.2));
+      gl_FragColor = vec4(col, 1.0);
+    }
+  `;
+
+  function compileShader(src, type) {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+      console.error(gl.getShaderInfoLog(s));
+    }
+    return s;
+  }
+  function createProgram(vs, fs) {
+    const p = gl.createProgram();
+    gl.attachShader(p, compileShader(vs, gl.VERTEX_SHADER));
+    gl.attachShader(p, compileShader(fs, gl.FRAGMENT_SHADER));
+    gl.linkProgram(p);
+    return p;
+  }
+
+  const mainProg = createProgram(vsSource, fsSource);
+  const locs = {
+    aPos: gl.getAttribLocation(mainProg, 'aPos'),
+    aUV: gl.getAttribLocation(mainProg, 'aUV'),
+    aNormal: gl.getAttribLocation(mainProg, 'aNormal'),
+    uMVP: gl.getUniformLocation(mainProg, 'uMVP'),
+    uModel: gl.getUniformLocation(mainProg, 'uModel'),
+    uTex: gl.getUniformLocation(mainProg, 'uTex'),
+    uLightDir: gl.getUniformLocation(mainProg, 'uLightDir'),
+    uEye: gl.getUniformLocation(mainProg, 'uEye'),
+  };
+
+  // Grab indicator shader
+  const indicatorVS = `
+    attribute vec2 aPos;
+    void main() { gl_Position = vec4(aPos, 0.0, 1.0); gl_PointSize = 40.0; }
+  `;
+  const indicatorFS = `
+    precision mediump float;
+    void main() {
+      float d = length(gl_PointCoord - 0.5) * 2.0;
+      float a = smoothstep(1.0, 0.7, d) * 0.35;
+      gl_FragColor = vec4(0.2, 0.5, 1.0, a);
+    }
+  `;
+  const indProg = createProgram(indicatorVS, indicatorFS);
+
+  // ─── Texture ─────────────────────────────────────────────────
+  const texCanvas = createReceiptTexture();
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, texCanvas);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+  // ─── Cloth Simulation ────────────────────────────────────────
+  const COLS = 25, ROWS = 50;
+  const WIDTH = 3.0, HEIGHT = 6.0;
+  const dx = WIDTH / (COLS - 1), dy = HEIGHT / (ROWS - 1);
+
+  class Particle {
+    constructor(x, y, z, pinned) {
+      this.px = x; this.py = y; this.pz = z;
+      this.ox = x; this.oy = y; this.oz = z;
+      this.pinned = pinned;
+      this.fx = 0; this.fy = 0; this.fz = 0;
+      this.grabbed = false;
+    }
+  }
+
+  const particles = [];
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const x = (c / (COLS - 1) - 0.5) * WIDTH;
+      const y = 3.5 - (r / (ROWS - 1)) * HEIGHT;
+      const z = 0;
+      const pinned = r === 0;
+      particles.push(new Particle(x, y, z, pinned));
+    }
+  }
+
+  function pAt(r, c) { return particles[r * COLS + c]; }
+
+  const constraints = [];
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      if (c < COLS - 1) constraints.push([pAt(r, c), pAt(r, c + 1), dx]);
+      if (r < ROWS - 1) constraints.push([pAt(r, c), pAt(r + 1, c), dy]);
+      if (c < COLS - 1 && r < ROWS - 1) {
+        constraints.push([pAt(r, c), pAt(r + 1, c + 1), Math.sqrt(dx*dx + dy*dy)]);
+      }
+      if (c > 0 && r < ROWS - 1) {
+        constraints.push([pAt(r, c), pAt(r + 1, c - 1), Math.sqrt(dx*dx + dy*dy)]);
+      }
+    }
+  }
+
+  const GRAVITY = -18.0;
+  const DT = 1 / 60;
+  const DAMPING = 0.015;
+  const ITERATIONS = 12;
+
+  function simulate() {
+    for (const p of particles) {
+      if (p.pinned || p.grabbed) continue;
+      const vx = (p.px - p.ox) * (1 - DAMPING);
+      const vy = (p.py - p.oy) * (1 - DAMPING);
+      const vz = (p.pz - p.oz) * (1 - DAMPING);
+      p.ox = p.px; p.oy = p.py; p.oz = p.pz;
+      p.px += vx; p.py += vy + GRAVITY * DT * DT; p.pz += vz;
+    }
+    for (let i = 0; i < ITERATIONS; i++) {
+      for (const [a, b, rest] of constraints) {
+        const dx_ = b.px - a.px, dy_ = b.py - a.py, dz_ = b.pz - a.pz;
+        const dist = Math.sqrt(dx_*dx_ + dy_*dy_ + dz_*dz_);
+        if (dist < 1e-6) continue;
+        const diff = (dist - rest) / dist * 0.5;
+        const aPinned = a.pinned || a.grabbed, bPinned = b.pinned || b.grabbed;
+        if (!aPinned && !bPinned) {
+          a.px += dx_ * diff; a.py += dy_ * diff; a.pz += dz_ * diff;
+          b.px -= dx_ * diff; b.py -= dy_ * diff; b.pz -= dz_ * diff;
+        } else if (!aPinned) {
+          a.px += dx_ * diff * 2; a.py += dy_ * diff * 2; a.pz += dz_ * diff * 2;
+        } else if (!bPinned) {
+          b.px -= dx_ * diff * 2; b.py -= dy_ * diff * 2; b.pz -= dz_ * diff * 2;
+        }
+      }
+    }
+  }
+
+  // ─── Mesh data ───────────────────────────────────────────────
+  function buildMesh() {
+    const verts = [], uvs = [], normals = [], indices = [];
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        const p = pAt(r, c);
+        verts.push(p.px, p.py, p.pz);
+        uvs.push(c / (COLS - 1), 1 - r / (ROWS - 1));
+        normals.push(0, 0, 1);
+      }
+    }
+    for (let r = 0; r < ROWS - 1; r++) {
+      for (let c = 0; c < COLS - 1; c++) {
+        const i = r * COLS + c;
+        indices.push(i, i + COLS, i + 1);
+        indices.push(i + 1, i + COLS, i + COLS + 1);
+      }
+    }
+    return { verts, uvs, normals, indices };
+  }
+
+  function computeNormals(mesh) {
+    const { verts, normals, indices } = mesh;
+    for (let i = 0; i < normals.length; i++) normals[i] = 0;
+    for (let i = 0; i < indices.length; i += 3) {
+      const i0 = indices[i], i1 = indices[i+1], i2 = indices[i+2];
+      const ax = verts[i0*3], ay = verts[i0*3+1], az = verts[i0*3+2];
+      const bx = verts[i1*3], by = verts[i1*3+1], bz = verts[i1*3+2];
+      const cx = verts[i2*3], cy = verts[i2*3+1], cz = verts[i2*3+2];
+      const e1x = bx-ax, e1y = by-ay, e1z = bz-az;
+      const e2x = cx-ax, e2y = cy-ay, e2z = cz-az;
+      const nx = e1y*e2z - e1z*e2y, ny = e1z*e2x - e1x*e2z, nz = e1x*e2y - e1y*e2x;
+      normals[i0*3] += nx; normals[i0*3+1] += ny; normals[i0*3+2] += nz;
+      normals[i1*3] += nx; normals[i1*3+1] += ny; normals[i1*3+2] += nz;
+      normals[i2*3] += nx; normals[i2*3+1] += ny; normals[i2*3+2] += nz;
+    }
+    for (let i = 0; i < normals.length; i += 3) {
+      const len = Math.sqrt(normals[i]*normals[i] + normals[i+1]*normals[i+1] + normals[i+2]*normals[i+2]);
+      if (len > 0) { normals[i] /= len; normals[i+1] /= len; normals[i+2] /= len; }
+    }
+  }
+
+  const mesh = buildMesh();
+  computeNormals(mesh);
+
+  const posBuf = gl.createBuffer();
+  const uvBuf = gl.createBuffer();
+  const normBuf = gl.createBuffer();
+  const idxBuf = gl.createBuffer();
+  const idxCount = mesh.indices.length;
+
+  gl.bindBuffer(gl.ARRAY_BUFFER, uvBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(mesh.uvs), gl.STATIC_DRAW);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, idxBuf);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(mesh.indices), gl.STATIC_DRAW);
+
+  // ─── Matrices ────────────────────────────────────────────────
+  function mat4Perspective(fov, aspect, near, far) {
+    const f = 1 / Math.tan(fov / 2);
+    return new Float32Array([
+      f/aspect,0,0,0,
+      0,f,0,0,
+      0,0,(far+near)/(near-far),-1,
+      0,0,(2*far*near)/(near-far),0
+    ]);
+  }
+  function mat4LookAt(eye, center, up) {
+    const z = normalize3(sub3(eye, center));
+    const x = normalize3(cross3(up, z));
+    const y = cross3(z, x);
+    return new Float32Array([
+      x[0],y[0],z[0],0,
+      x[1],y[1],z[1],0,
+      x[2],y[2],z[2],0,
+      -dot3(x,eye),-dot3(y,eye),-dot3(z,eye),1
+    ]);
+  }
+  function sub3(a,b){return[a[0]-b[0],a[1]-b[1],a[2]-b[2]];}
+  function cross3(a,b){return[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];}
+  function dot3(a,b){return a[0]*b[0]+a[1]*b[1]+a[2]*b[2];}
+  function normalize3(v){const l=Math.sqrt(v[0]*v[0]+v[1]*v[1]+v[2]*v[2]);return l>0?[v[0]/l,v[1]/l,v[2]/l]:v;}
+  function mat4Mul(a,b){
+    const r=new Float32Array(16);
+    for(let i=0;i<4;i++)for(let j=0;j<4;j++){
+      r[j*4+i]=a[i]*b[j*4]+a[4+i]*b[j*4+1]+a[8+i]*b[j*4+2]+a[12+i]*b[j*4+3];
+    }
+    return r;
+  }
+
+  const eye = [0, 1, 10];
+  const target = [0, 0.5, 0];
+  const up = [0, 1, 0];
+  const proj = mat4Perspective(Math.PI / 5, canvas.width / canvas.height, 0.1, 100);
+  const view = mat4LookAt(eye, target, up);
+  const mvp = mat4Mul(proj, view);
+  const model = new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]);
+
+  // ─── Raycasting for interaction ──────────────────────────────
+  function screenToWorld(mx, my) {
+    const rect = canvas.getBoundingClientRect();
+    const nx = ((mx - rect.left) / rect.width) * 2 - 1;
+    const ny = -(((my - rect.top) / rect.height) * 2 - 1);
+    const invVP = mat4Inverse(mvp);
+    const near = mat4MulVec4(invVP, [nx, ny, -1, 1]);
+    near[0] /= near[3]; near[1] /= near[3]; near[2] /= near[3];
+    const far_ = mat4MulVec4(invVP, [nx, ny, 1, 1]);
+    far_[0] /= far_[3]; far_[1] /= far_[3]; far_[2] /= far_[3];
+    return { origin: [near[0], near[1], near[2]], dir: normalize3([far_[0]-near[0], far_[1]-near[1], far_[2]-near[2]]) };
+  }
+
+  function mat4MulVec4(m, v) {
+    return [
+      m[0]*v[0]+m[4]*v[1]+m[8]*v[2]+m[12]*v[3],
+      m[1]*v[0]+m[5]*v[1]+m[9]*v[2]+m[13]*v[3],
+      m[2]*v[0]+m[6]*v[1]+m[10]*v[2]+m[14]*v[3],
+      m[3]*v[0]+m[7]*v[1]+m[11]*v[2]+m[15]*v[3]
+    ];
+  }
+
+  function mat4Inverse(m) {
+    const inv = new Float32Array(16);
+    inv[0] = m[5]*m[10]*m[15]-m[5]*m[11]*m[14]-m[9]*m[6]*m[15]+m[9]*m[7]*m[14]+m[13]*m[6]*m[11]-m[13]*m[7]*m[10];
+    inv[4] = -m[4]*m[10]*m[15]+m[4]*m[11]*m[14]+m[8]*m[6]*m[15]-m[8]*m[7]*m[14]-m[12]*m[6]*m[11]+m[12]*m[7]*m[10];
+    inv[8] = m[4]*m[9]*m[15]-m[4]*m[11]*m[13]-m[8]*m[5]*m[15]+m[8]*m[7]*m[13]+m[12]*m[5]*m[11]-m[12]*m[7]*m[9];
+    inv[12] = -m[4]*m[9]*m[14]+m[4]*m[10]*m[13]+m[8]*m[5]*m[14]-m[8]*m[6]*m[13]-m[12]*m[5]*m[10]+m[12]*m[6]*m[9];
+    inv[1] = -m[1]*m[10]*m[15]+m[1]*m[11]*m[14]+m[9]*m[2]*m[15]-m[9]*m[3]*m[14]-m[13]*m[2]*m[11]+m[13]*m[3]*m[10];
+    inv[5] = m[0]*m[10]*m[15]-m[0]*m[11]*m[14]-m[8]*m[2]*m[15]+m[8]*m[3]*m[14]+m[12]*m[2]*m[11]-m[12]*m[3]*m[10];
+    inv[9] = -m[0]*m[9]*m[15]+m[0]*m[11]*m[13]+m[8]*m[1]*m[15]-m[8]*m[3]*m[13]-m[12]*m[1]*m[11]+m[12]*m[3]*m[9];
+    inv[13] = m[0]*m[9]*m[14]-m[0]*m[10]*m[13]-m[8]*m[1]*m[14]+m[8]*m[2]*m[13]+m[12]*m[1]*m[10]-m[12]*m[2]*m[9];
+    inv[2] = m[1]*m[6]*m[15]-m[1]*m[7]*m[14]-m[5]*m[2]*m[15]+m[5]*m[3]*m[14]+m[13]*m[2]*m[7]-m[13]*m[3]*m[6];
+    inv[6] = -m[0]*m[6]*m[15]+m[0]*m[7]*m[14]+m[4]*m[2]*m[15]-m[4]*m[3]*m[14]-m[12]*m[2]*m[7]+m[12]*m[3]*m[6];
+    inv[10] = m[0]*m[5]*m[15]-m[0]*m[7]*m[13]-m[4]*m[1]*m[15]+m[4]*m[3]*m[13]+m[12]*m[1]*m[7]-m[12]*m[3]*m[5];
+    inv[14] = -m[0]*m[5]*m[14]+m[0]*m[6]*m[13]+m[4]*m[1]*m[14]-m[4]*m[2]*m[13]-m[12]*m[1]*m[6]+m[12]*m[2]*m[5];
+    inv[3] = -m[1]*m[6]*m[11]+m[1]*m[7]*m[10]+m[5]*m[2]*m[11]-m[5]*m[3]*m[10]-m[9]*m[2]*m[7]+m[9]*m[3]*m[6];
+    inv[7] = m[0]*m[6]*m[11]-m[0]*m[7]*m[10]-m[4]*m[2]*m[11]+m[4]*m[3]*m[10]+m[8]*m[2]*m[7]-m[8]*m[3]*m[6];
+    inv[11] = -m[0]*m[5]*m[11]+m[0]*m[7]*m[9]+m[4]*m[1]*m[11]-m[4]*m[3]*m[9]-m[8]*m[1]*m[7]+m[8]*m[3]*m[5];
+    inv[15] = m[0]*m[5]*m[10]-m[0]*m[6]*m[9]-m[4]*m[1]*m[10]+m[4]*m[2]*m[9]+m[8]*m[1]*m[6]-m[8]*m[2]*m[5];
+    let det = m[0]*inv[0]+m[1]*inv[4]+m[2]*inv[8]+m[3]*inv[12];
+    if (Math.abs(det) < 1e-10) return new Float32Array(16);
+    det = 1 / det;
+    for (let i = 0; i < 16; i++) inv[i] *= det;
+    return inv;
+  }
+
+  function rayTriHit(ro, rd, p0, p1, p2) {
+    const e1 = sub3(p1, p0), e2 = sub3(p2, p0);
+    const h = cross3(rd, e2);
+    const a = dot3(e1, h);
+    if (Math.abs(a) < 1e-8) return null;
+    const f = 1 / a;
+    const s = sub3(ro, p0);
+    const u = f * dot3(s, h);
+    if (u < 0 || u > 1) return null;
+    const q = cross3(s, e1);
+    const v = f * dot3(rd, q);
+    if (v < 0 || u + v > 1) return null;
+    const t = f * dot3(e2, q);
+    if (t < 0) return null;
+    return t;
+  }
+
+  function findClosestParticle(ro, rd) {
+    let best = null, bestDist = Infinity;
+    for (const p of particles) {
+      const toP = sub3([p.px, p.py, p.pz], ro);
+      const t = dot3(toP, rd);
+      if (t < 0) continue;
+      const proj = [ro[0]+rd[0]*t, ro[1]+rd[1]*t, ro[2]+rd[2]*t];
+      const d = Math.sqrt((p.px-proj[0])**2 + (p.py-proj[1])**2 + (p.pz-proj[2])**2);
+      if (d < 0.5 && d < bestDist) { best = p; bestDist = d; }
+    }
+    return best;
+  }
+
+  // ─── Interaction ─────────────────────────────────────────────
+  let grabbed = null;
+  let grabScreenPos = null;
+
+  canvas.addEventListener('pointerdown', (e) => {
+    const ray = screenToWorld(e.clientX, e.clientY);
+    const p = findClosestParticle(ray.origin, ray.dir);
+    if (p) {
+      grabbed = p;
+      p.grabbed = true;
+      grabScreenPos = { x: e.clientX, y: e.clientY };
+    }
+  });
+
+  canvas.addEventListener('pointermove', (e) => {
+    if (!grabbed) return;
+    const ray = screenToWorld(e.clientX, e.clientY);
+    const t = dot3(sub3([0, 0, 0], ray.origin), [0, 0, 1]) / dot3(ray.dir, [0, 0, 1]);
+    const worldPos = [ray.origin[0] + ray.dir[0] * t, ray.origin[1] + ray.dir[1] * t, ray.origin[2] + ray.dir[2] * t];
+    grabbed.px = worldPos[0]; grabbed.py = worldPos[1]; grabbed.pz = worldPos[2];
+    grabbed.ox = worldPos[0]; grabbed.oy = worldPos[1]; grabbed.oz = worldPos[2];
+    grabScreenPos = { x: e.clientX, y: e.clientY };
+  });
+
+  function release() {
+    if (grabbed) { grabbed.grabbed = false; grabbed = null; grabScreenPos = null; }
+  }
+  canvas.addEventListener('pointerup', release);
+  canvas.addEventListener('pointerleave', release);
+
+  // ─── Render Loop ─────────────────────────────────────────────
+  gl.enable(gl.DEPTH_TEST);
+  gl.clearColor(0.898, 0.898, 0.898, 1);
+
+  function frame() {
+    simulate();
+
+    const posData = new Float32Array(particles.length * 3);
+    for (let i = 0; i < particles.length; i++) {
+      posData[i*3] = particles[i].px;
+      posData[i*3+1] = particles[i].py;
+      posData[i*3+2] = particles[i].pz;
+    }
+    mesh.verts = posData;
+    computeNormals(mesh);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, posData, gl.DYNAMIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, normBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(mesh.normals), gl.DYNAMIC_DRAW);
+
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+    gl.useProgram(mainProg);
+    gl.uniformMatrix4fv(locs.uMVP, false, mvp);
+    gl.uniformMatrix4fv(locs.uModel, false, model);
+    gl.uniform3f(locs.uLightDir, 0.5, 0.8, 1.0);
+    gl.uniform3fv(locs.uEye, eye);
+
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.uniform1i(locs.uTex, 0);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
+    gl.enableVertexAttribArray(locs.aPos);
+    gl.vertexAttribPointer(locs.aPos, 3, gl.FLOAT, false, 0, 0);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, uvBuf);
+    gl.enableVertexAttribArray(locs.aUV);
+    gl.vertexAttribPointer(locs.aUV, 2, gl.FLOAT, false, 0, 0);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, normBuf);
+    gl.enableVertexAttribArray(locs.aNormal);
+    gl.vertexAttribPointer(locs.aNormal, 3, gl.FLOAT, false, 0, 0);
+
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, idxBuf);
+    gl.drawElements(gl.TRIANGLES, idxCount, gl.UNSIGNED_SHORT, 0);
+
+    // Grab indicator
+    if (grabbed && grabScreenPos) {
+      gl.disable(gl.DEPTH_TEST);
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      gl.useProgram(indProg);
+      const rect = canvas.getBoundingClientRect();
+      const nx = ((grabScreenPos.x - rect.left) / rect.width) * 2 - 1;
+      const ny = -(((grabScreenPos.y - rect.top) / rect.height) * 2 - 1);
+      const quadBuf = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([nx, ny]), gl.STATIC_DRAW);
+      const loc = gl.getAttribLocation(indProg, 'aPos');
+      gl.enableVertexAttribArray(loc);
+      gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+      gl.drawArrays(gl.POINTS, 0, 1);
+      gl.deleteBuffer(quadBuf);
+      gl.disable(gl.BLEND);
+      gl.enable(gl.DEPTH_TEST);
+    }
+
+    requestAnimationFrame(frame);
+  }
+  frame();
+})();
+</script>
+</body>
+</html>

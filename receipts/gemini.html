@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive 3D Receipt</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #e5e5e5;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            user-select: none;
+        }
+        #container {
+            position: relative;
+            width: 100%;
+            height: 80vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        canvas {
+            display: block;
+            max-width: 100%;
+            max-height: 100%;
+        }
+        .instruction {
+            margin-top: 20px;
+            color: #888;
+            font-size: 14px;
+            letter-spacing: 0.5px;
+        }
+        #ui-overlay {
+            position: absolute;
+            pointer-events: none;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+<body>
+
+<div id="container">
+    <canvas id="glCanvas"></canvas>
+    <div id="ui-overlay"></div>
+</div>
+<div class="instruction">Grab and drag the receipt</div>
+
+<script>
+/**
+ * INTERACTIVE 3D RECEIPT DEMO
+ * - Raw WebGL 1.0 Renderer
+ * - Custom Verlet Cloth Simulation
+ * - Procedural Receipt Texture
+ */
+
+const canvas = document.getElementById('glCanvas');
+const gl = canvas.getContext('webgl', { antialias: true });
+
+if (!gl) {
+    alert('WebGL not supported');
+}
+
+// --- CONFIGURATION ---
+const ROWS = 50;
+const COLS = 25;
+const WIDTH = 3;
+const HEIGHT = 6;
+const ITERATIONS = 10;
+const GRAVITY = 0.005;
+const FRICTION = 0.98;
+const PINNED_TOP = true;
+
+// --- MATH UTILS ---
+const m4 = {
+    projection: (fovy, aspect, near, far) => {
+        const f = Math.tan(Math.PI * 0.5 - 0.5 * fovy);
+        const rangeInv = 1.0 / (near - far);
+        return [
+            f / aspect, 0, 0, 0,
+            0, f, 0, 0,
+            0, 0, (near + far) * rangeInv, -1,
+            0, 0, near * far * rangeInv * 2, 0
+        ];
+    },
+    identity: () => [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1],
+    multiply: (a, b) => {
+        const out = new Float32Array(16);
+        for (let i = 0; i < 4; i++) {
+            for (let j = 0; j < 4; j++) {
+                out[i * 4 + j] = a[i * 4 + 0] * b[0 * 4 + j] +
+                                a[i * 4 + 1] * b[1 * 4 + j] +
+                                a[i * 4 + 2] * b[2 * 4 + j] +
+                                a[i * 4 + 3] * b[3 * 4 + j];
+            }
+        }
+        return out;
+    },
+    translate: (m, x, y, z) => {
+        const t = m4.identity();
+        t[12] = x; t[13] = y; t[14] = z;
+        return m4.multiply(m, t);
+    }
+};
+
+// --- SHADERS ---
+const vsSource = `
+    attribute vec3 aPosition;
+    attribute vec2 aTexCoord;
+    attribute vec3 aNormal;
+    
+    uniform mat4 uProjection;
+    uniform mat4 uView;
+    
+    varying vec2 vTexCoord;
+    varying vec3 vNormal;
+    varying vec3 vFragPos;
+
+    void main() {
+        vTexCoord = aTexCoord;
+        vNormal = aNormal;
+        vFragPos = aPosition;
+        gl_Position = uProjection * uView * vec4(aPosition, 1.0);
+    }
+`;
+
+const fsSource = `
+    precision mediump float;
+    varying vec2 vTexCoord;
+    varying vec3 vNormal;
+    varying vec3 vFragPos;
+    
+    uniform sampler2D uSampler;
+    uniform vec3 uLightPos;
+    
+    void main() {
+        vec4 texColor = texture2D(uSampler, vTexCoord);
+        
+        vec3 norm = normalize(vNormal);
+        // Face forward check (render both sides)
+        if (!gl_FrontFacing) norm = -norm;
+        
+        vec3 lightDir = normalize(uLightPos - vFragPos);
+        float diff = max(dot(norm, lightDir), 0.0);
+        float ambient = 0.4;
+        
+        // Add a bit of paper-like grain/roughness
+        float noise = fract(sin(dot(vTexCoord, vec2(12.9898, 78.233))) * 43758.5453) * 0.05;
+        
+        gl_FragColor = vec4(texColor.rgb * (diff + ambient + noise), 1.0);
+    }
+`;
+
+function createShader(gl, type, source) {
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    return shader;
+}
+
+const program = gl.createProgram();
+gl.attachShader(program, createShader(gl, gl.VERTEX_SHADER, vsSource));
+gl.attachShader(program, createShader(gl, gl.FRAGMENT_SHADER, fsSource));
+gl.linkProgram(program);
+gl.useProgram(program);
+
+const attribs = {
+    pos: gl.getAttribLocation(program, 'aPosition'),
+    uv: gl.getAttribLocation(program, 'aTexCoord'),
+    norm: gl.getAttribLocation(program, 'aNormal')
+};
+const uniforms = {
+    proj: gl.getUniformLocation(program, 'uProjection'),
+    view: gl.getUniformLocation(program, 'uView'),
+    light: gl.getUniformLocation(program, 'uLightPos'),
+    sampler: gl.getUniformLocation(program, 'uSampler')
+};
+
+// --- PHYSICS ENGINE ---
+class Particle {
+    constructor(x, y, z) {
+        this.pos = [x, y, z];
+        this.oldPos = [x, y, z];
+        this.pinned = false;
+    }
+    update() {
+        if (this.pinned) return;
+        const vx = (this.pos[0] - this.oldPos[0]) * FRICTION;
+        const vy = (this.pos[1] - this.oldPos[1]) * FRICTION;
+        const vz = (this.pos[2] - this.oldPos[2]) * FRICTION;
+        this.oldPos = [...this.pos];
+        this.pos[0] += vx;
+        this.pos[1] += vy - GRAVITY;
+        this.pos[2] += vz;
+    }
+}
+
+class Constraint {
+    constructor(p1, p2, dist) {
+        this.p1 = p1;
+        this.p2 = p2;
+        this.dist = dist;
+    }
+    solve() {
+        const dx = this.p2.pos[0] - this.p1.pos[0];
+        const dy = this.p2.pos[1] - this.p1.pos[1];
+        const dz = this.p2.pos[2] - this.p1.pos[2];
+        const d = Math.sqrt(dx*dx + dy*dy + dz*dz);
+        const diff = (this.dist - d) / d * 0.5;
+        const ox = dx * diff;
+        const oy = dy * diff;
+        const oz = dz * diff;
+        if (!this.p1.pinned) { this.p1.pos[0] -= ox; this.p1.pos[1] -= oy; this.p1.pos[2] -= oz; }
+        if (!this.p2.pinned) { this.p2.pos[0] += ox; this.p2.pos[1] += oy; this.p2.pos[2] += oz; }
+    }
+}
+
+const particles = [];
+const constraints = [];
+
+// Initialize grid
+for (let r = 0; r <= ROWS; r++) {
+    for (let c = 0; c <= COLS; c++) {
+        const x = (c / COLS - 0.5) * WIDTH;
+        const y = (0.5 - r / ROWS) * HEIGHT;
+        const p = new Particle(x, y, 0);
+        if (PINNED_TOP && r === 0) p.pinned = true;
+        particles.push(p);
+    }
+}
+
+// Constraints
+for (let r = 0; r <= ROWS; r++) {
+    for (let c = 0; c <= COLS; c++) {
+        const idx = r * (COLS + 1) + c;
+        if (c < COLS) { // horizontal
+            const p1 = particles[idx];
+            const p2 = particles[idx + 1];
+            constraints.push(new Constraint(p1, p2, WIDTH / COLS));
+        }
+        if (r < ROWS) { // vertical
+            const p1 = particles[idx];
+            const p2 = particles[idx + (COLS + 1)];
+            constraints.push(new Constraint(p1, p2, HEIGHT / ROWS));
+        }
+        // Diagonals for stability
+        if (r < ROWS && c < COLS) {
+            constraints.push(new Constraint(particles[idx], particles[idx + COLS + 2], Math.sqrt((WIDTH/COLS)**2 + (HEIGHT/ROWS)**2)));
+            constraints.push(new Constraint(particles[idx + 1], particles[idx + COLS + 1], Math.sqrt((WIDTH/COLS)**2 + (HEIGHT/ROWS)**2)));
+        }
+    }
+}
+
+// Indices for rendering
+const indices = [];
+for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+        const i = r * (COLS + 1) + c;
+        indices.push(i, i + 1, i + COLS + 1);
+        indices.push(i + 1, i + COLS + 2, i + COLS + 1);
+    }
+}
+
+// --- TEXTURE GENERATION ---
+const texCanvas = document.createElement('canvas');
+texCanvas.width = 512;
+texCanvas.height = 1024;
+const ctx = texCanvas.getContext('2d');
+
+function generateTexture() {
+    ctx.fillStyle = '#fdfdfa'; // Paper color
+    ctx.fillRect(0, 0, 512, 1024);
+    ctx.fillStyle = '#111';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+
+    // Header
+    ctx.font = 'bold 40px monospace';
+    ctx.fillText('THE FLORNRM SHOP', 256, 40);
+    ctx.font = '24px monospace';
+    ctx.fillText('42 Mesh Lane, WebGL City', 256, 90);
+    ctx.fillText('Tel: (555) 042-1337', 256, 120);
+
+    ctx.textAlign = 'left';
+    ctx.font = '24px monospace';
+    ctx.fillText('Date: 2026-02-23  14:17', 40, 180);
+    ctx.fillText('Order: #00382', 40, 210);
+
+    const drawDashed = (y) => {
+        ctx.beginPath();
+        ctx.setLineDash([10, 10]);
+        ctx.moveTo(40, y);
+        ctx.lineTo(472, y);
+        ctx.stroke();
+    };
+
+    drawDashed(250);
+
+    const items = [
+        ['Vertex Shader', '$4.20'],
+        ['Fragment Shader', '$3.50'],
+        ['Normal Map', '$2.80'],
+        ['UV Unwrap', '$1.50'],
+        ['Cloth Simulation', '$6.00']
+    ];
+
+    let y = 280;
+    items.forEach(item => {
+        ctx.textAlign = 'left';
+        ctx.fillText(item[0], 40, y);
+        ctx.textAlign = 'right';
+        ctx.fillText(item[1], 472, y);
+        y += 40;
+    });
+
+    drawDashed(y + 10);
+    y += 40;
+
+    ctx.textAlign = 'left';
+    ctx.fillText('Subtotal', 40, y);
+    ctx.textAlign = 'right';
+    ctx.fillText('$18.00', 472, y);
+    y += 40;
+    
+    ctx.textAlign = 'left';
+    ctx.fillText('Tax (8%)', 40, y);
+    ctx.textAlign = 'right';
+    ctx.fillText('$1.44', 472, y);
+    y += 50;
+
+    ctx.beginPath();
+    ctx.setLineDash([]);
+    ctx.lineWidth = 4;
+    ctx.moveTo(40, y);
+    ctx.lineTo(472, y);
+    ctx.stroke();
+    y += 20;
+
+    ctx.font = 'bold 32px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText('TOTAL', 40, y);
+    ctx.textAlign = 'right';
+    ctx.fillText('$19.44', 472, y);
+
+    ctx.font = '24px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('Thank you for visiting!', 256, 850);
+    ctx.font = '18px monospace';
+    ctx.fillText('http://github.com/flornkm', 256, 890);
+
+    const texture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, texCanvas);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    return texture;
+}
+
+const texture = generateTexture();
+
+// --- BUFFERS ---
+const posBuffer = gl.createBuffer();
+const uvBuffer = gl.createBuffer();
+const normBuffer = gl.createBuffer();
+const indexBuffer = gl.createBuffer();
+
+const uvs = new Float32Array(particles.length * 2);
+for (let r = 0; r <= ROWS; r++) {
+    for (let c = 0; c <= COLS; c++) {
+        const idx = (r * (COLS + 1) + c) * 2;
+        uvs[idx] = c / COLS;
+        uvs[idx + 1] = r / ROWS;
+    }
+}
+gl.bindBuffer(gl.ARRAY_BUFFER, uvBuffer);
+gl.bufferData(gl.ARRAY_BUFFER, uvs, gl.STATIC_DRAW);
+
+gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
+gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indices), gl.STATIC_DRAW);
+
+// --- INTERACTION ---
+let grabbedParticle = null;
+let mouseX = 0, mouseY = 0;
+
+const grabIndicator = document.createElement('div');
+grabIndicator.style.cssText = `
+    position: absolute;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: rgba(0, 0, 0, 0.2);
+    pointer-events: none;
+    display: none;
+    transform: translate(-50%, -50%);
+`;
+document.getElementById('ui-overlay').appendChild(grabIndicator);
+
+function getMouse3D(e) {
+    const rect = canvas.getBoundingClientRect();
+    const x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    const y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+    
+    // Approximate depth for grabbing
+    // In a real raycaster we'd check intersection, here we use the particle's depth
+    return [x * 4, y * 4, 0]; 
+}
+
+canvas.addEventListener('mousedown', e => {
+    const mouse = getMouse3D(e);
+    let minDist = 1.0;
+    grabbedParticle = null;
+
+    particles.forEach(p => {
+        // Simplified project: just compare screen-space-ish coordinates
+        // For a receipt at distance 8, scale is roughly correct
+        const dx = p.pos[0] - mouse[0];
+        const dy = p.pos[1] - mouse[1];
+        const d = Math.sqrt(dx*dx + dy*dy);
+        if (d < minDist) {
+            minDist = d;
+            grabbedParticle = p;
+        }
+    });
+
+    if (grabbedParticle) {
+        grabIndicator.style.display = 'block';
+    }
+});
+
+window.addEventListener('mousemove', e => {
+    if (grabbedParticle) {
+        const mouse = getMouse3D(e);
+        grabbedParticle.pos[0] = mouse[0];
+        grabbedParticle.pos[1] = mouse[1];
+        grabbedParticle.pos[2] = 1.0; // Pull slightly towards camera
+        
+        grabIndicator.style.left = e.clientX + 'px';
+        grabIndicator.style.top = e.clientY + 'px';
+    }
+});
+
+window.addEventListener('mouseup', () => {
+    grabbedParticle = null;
+    grabIndicator.style.display = 'none';
+});
+
+// Touch support
+canvas.addEventListener('touchstart', e => {
+    e.preventDefault();
+    const t = e.touches[0];
+    canvas.dispatchEvent(new MouseEvent('mousedown', { clientX: t.clientX, clientY: t.clientY }));
+}, { passive: false });
+
+window.addEventListener('touchmove', e => {
+    const t = e.touches[0];
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: t.clientX, clientY: t.clientY }));
+}, { passive: false });
+
+window.addEventListener('touchend', () => {
+    window.dispatchEvent(new MouseEvent('mouseup', {}));
+});
+
+// --- RENDER LOOP ---
+function resize() {
+    const dpr = window.devicePixelRatio || 1;
+    const w = window.innerWidth;
+    const h = window.innerHeight * 0.8;
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    canvas.style.width = w + 'px';
+    canvas.style.height = h + 'px';
+    gl.viewport(0, 0, canvas.width, canvas.height);
+}
+window.addEventListener('resize', resize);
+resize();
+
+function updatePhysics() {
+    particles.forEach(p => p.update());
+    for (let i = 0; i < ITERATIONS; i++) {
+        constraints.forEach(c => c.solve());
+    }
+}
+
+function computeNormals() {
+    const norms = new Float32Array(particles.length * 3);
+    for (let r = 0; r < ROWS; r++) {
+        for (let c = 0; c < COLS; c++) {
+            const i = r * (COLS + 1) + c;
+            const p1 = particles[i].pos;
+            const p2 = particles[i + 1].pos;
+            const p3 = particles[i + COLS + 1].pos;
+
+            const v1 = [p2[0]-p1[0], p2[1]-p1[1], p2[2]-p1[2]];
+            const v2 = [p3[0]-p1[0], p3[1]-p1[1], p3[2]-p1[2]];
+            
+            // Cross product
+            const nx = v1[1]*v2[2] - v1[2]*v2[1];
+            const ny = v1[2]*v2[0] - v1[0]*v2[2];
+            const nz = v1[0]*v2[1] - v1[1]*v2[0];
+            
+            norms[i*3] += nx; norms[i*3+1] += ny; norms[i*3+2] += nz;
+            norms[(i+1)*3] += nx; norms[(i+1)*3+1] += ny; norms[(i+1)*3+2] += nz;
+            norms[(i+COLS+1)*3] += nx; norms[(i+COLS+1)*3+1] += ny; norms[(i+COLS+1)*3+2] += nz;
+        }
+    }
+    return norms;
+}
+
+function render() {
+    updatePhysics();
+
+    gl.clearColor(0.898, 0.898, 0.898, 1.0);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.enable(gl.DEPTH_TEST);
+    gl.enable(gl.CULL_FACE);
+    gl.cullFace(gl.BACK);
+
+    const aspect = canvas.width / canvas.height;
+    const proj = m4.projection(Math.PI / 4, aspect, 0.1, 100);
+    const view = m4.translate(m4.identity(), 0, 1.5, -10);
+
+    gl.uniformMatrix4fv(uniforms.proj, false, proj);
+    gl.uniformMatrix4fv(uniforms.view, false, view);
+    gl.uniform3f(uniforms.light, 5, 5, 10);
+
+    const posData = new Float32Array(particles.length * 3);
+    particles.forEach((p, i) => {
+        posData[i*3] = p.pos[0];
+        posData[i*3+1] = p.pos[1];
+        posData[i*3+2] = p.pos[2];
+    });
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, posBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, posData, gl.DYNAMIC_DRAW);
+    gl.vertexAttribPointer(attribs.pos, 3, gl.FLOAT, false, 0, 0);
+    gl.enableVertexAttribArray(attribs.pos);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, uvBuffer);
+    gl.vertexAttribPointer(attribs.uv, 2, gl.FLOAT, false, 0, 0);
+    gl.enableVertexAttribArray(attribs.uv);
+
+    const normData = computeNormals();
+    gl.bindBuffer(gl.ARRAY_BUFFER, normBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, normData, gl.DYNAMIC_DRAW);
+    gl.vertexAttribPointer(attribs.norm, 3, gl.FLOAT, false, 0, 0);
+    gl.enableVertexAttribArray(attribs.norm);
+
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
+    
+    // Draw front
+    gl.cullFace(gl.BACK);
+    gl.drawElements(gl.TRIANGLES, indices.length, gl.UNSIGNED_SHORT, 0);
+    
+    // Draw back
+    gl.cullFace(gl.FRONT);
+    gl.drawElements(gl.TRIANGLES, indices.length, gl.UNSIGNED_SHORT, 0);
+
+    requestAnimationFrame(render);
+}
+
+render();
+
+</script>
+</body>
+</html>

@@ -1,0 +1,694 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Interactive 3D Paper Receipt</title>
+<style>
+  body {
+    background-color: #e5e5e5;
+    margin: 0;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    font-family: 'Courier New', monospace;
+  }
+  #glcanvas {
+    width: 800px;
+    height: 600px;
+    display: block;
+  }
+  #instruction {
+    color: #777;
+    margin-top: 20px;
+    font-size: 18px;
+    text-align: center;
+    pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="glcanvas"></canvas>
+<div id="instruction">Grab and drag the receipt</div>
+<script>
+(function() {
+  const canvas = document.getElementById('glcanvas');
+  const gl = canvas.getContext('webgl', { antialias: true, alpha: true });
+  if (!gl) {
+    alert('WebGL not supported');
+    return;
+  }
+
+  // Create texture canvas for receipt
+  const texCanvas = document.createElement('canvas');
+  texCanvas.width = 256;
+  texCanvas.height = 512;
+  const texCtx = texCanvas.getContext('2d');
+  texCtx.font = '14px "Courier New", monospace';
+  texCtx.textBaseline = 'top';
+  texCtx.fillStyle = '#f8f8f8'; // slightly off-white paper
+  texCtx.fillRect(0, 0, texCanvas.width, texCanvas.height);
+  texCtx.fillStyle = '#222'; // dark gray text
+  texCtx.textAlign = 'center';
+  
+  // Header
+  texCtx.font = 'bold 24px "Courier New", monospace';
+  texCtx.fillText('THE FLORNRM SHOP', texCanvas.width/2, 30);
+  texCtx.font = '16px "Courier New", monospace';
+  texCtx.fillText('42 Mesh Lane, WebGL City', texCanvas.width/2, 70);
+  texCtx.fillText('Tel: (555) 042-1337', texCanvas.width/2, 100);
+  
+  // Left-aligned
+  texCtx.textAlign = 'left';
+  texCtx.fillText('Date: 2026-02-23  14:17', 20, 150);
+  texCtx.fillText('Order: #00382', 20, 180);
+  
+  // Dashed line
+  texCtx.strokeStyle = '#ccc';
+  texCtx.lineWidth = 1;
+  texCtx.setLineDash([4, 2]);
+  texCtx.beginPath();
+  texCtx.moveTo(20, 220);
+  texCtx.lineTo(texCanvas.width-20, 220);
+  texCtx.stroke();
+  texCtx.setLineDash([]);
+  
+  // Items
+  texCtx.font = '16px "Courier New", monospace';
+  texCtx.fillText('Vertex Shader', 20, 260);
+  texCtx.textAlign = 'right';
+  texCtx.fillText('$4.20', texCanvas.width-20, 260);
+  texCtx.textAlign = 'left';
+  texCtx.fillText('Fragment Shader', 20, 290);
+  texCtx.textAlign = 'right';
+  texCtx.fillText('$3.50', texCanvas.width-20, 290);
+  texCtx.textAlign = 'left';
+  texCtx.fillText('Normal Map', 20, 320);
+  texCtx.textAlign = 'right';
+  texCtx.fillText('$2.80', texCanvas.width-20, 320);
+  texCtx.textAlign = 'left';
+  texCtx.fillText('UV Unwrap', 20, 350);
+  texCtx.textAlign = 'right';
+  texCtx.fillText('$1.50', texCanvas.width-20, 350);
+  texCtx.textAlign = 'left';
+  texCtx.fillText('Cloth Simulation', 20, 380);
+  texCtx.textAlign = 'right';
+  texCtx.fillText('$6.00', texCanvas.width-20, 380);
+  
+  // Dashed line divider
+  texCtx.strokeStyle = '#ccc';
+  texCtx.lineWidth = 1;
+  texCtx.setLineDash([4, 2]);
+  texCtx.beginPath();
+  texCtx.moveTo(20, 420);
+  texCtx.lineTo(texCanvas.width-20, 420);
+  texCtx.stroke();
+  texCtx.setLineDash([]);
+  
+  // Totals
+  texCtx.font = '18px "Courier New", monospace';
+  texCtx.textAlign = 'left';
+  texCtx.fillText('Subtotal', 20, 460);
+  texCtx.textAlign = 'right';
+  texCtx.fillText('$18.00', texCanvas.width-20, 460);
+  texCtx.textAlign = 'left';
+  texCtx.fillText('Tax (8%)', 20, 490);
+  texCtx.textAlign = 'right';
+  texCtx.fillText('$1.44', texCanvas.width-20, 490);
+  texCtx.font = 'bold 20px "Courier New", monospace';
+  texCtx.textAlign = 'left';
+  texCtx.fillText('TOTAL', 20, 530);
+  texCtx.textAlign = 'right';
+  texCtx.fillText('$19.44', texCanvas.width-20, 530);
+  
+  // Footer
+  texCtx.font = 'italic 16px "Courier New", monospace';
+  texCtx.textAlign = 'center';
+  texCtx.fillText('Thank you for visiting!', texCanvas.width/2, 570);
+  texCtx.font = 'italic 12px "Courier New", monospace';
+  texCtx.fillText('http://github.com/flornkm', texCanvas.width/2, 595);
+  
+  // Create WebGL texture
+  const texture = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, texCanvas);
+  
+  // Vertex shader source
+  const vsSource = `
+    attribute vec3 aVertexPosition;
+    attribute vec2 aTextureCoord;
+    attribute vec3 aVertexNormal;
+    
+    uniform mat4 uModelViewMatrix;
+    uniform mat4 uProjectionMatrix;
+    uniform mat3 uNormalMatrix;
+    
+    varying vec2 vTextureCoord;
+    varying vec3 vNormal;
+    varying vec3 vViewDirection;
+    
+    void main() {
+      gl_Position = uProjectionMatrix * uModelViewMatrix * vec4(aVertexPosition, 1.0);
+      vTextureCoord = aTextureCoord;
+      vNormal = normalize(uNormalMatrix * aVertexNormal);
+      vec4 viewPosition = uModelViewMatrix * vec4(aVertexPosition, 1.0);
+      vViewDirection = -normalize(viewPosition.xyz);
+    }
+  `;
+  
+  // Fragment shader source
+  const fsSource = `
+    precision mediump float;
+    
+    varying vec2 vTextureCoord;
+    varying vec3 vNormal;
+    varying vec3 vViewDirection;
+    
+    uniform sampler2D uSampler;
+    uniform vec3 uAmbientLight;
+    uniform vec3 uDirectionalLight;
+    uniform vec3 uDirectionalLightColor;
+    
+    void main() {
+      vec4 textureColor = texture2D(uSampler, vTextureCoord);
+      if (textureColor.a < 0.1) discard;
+      
+      vec3 ambient = uAmbientLight * textureColor.rgb;
+      
+      vec3 normal = normalize(vNormal);
+      float directional = max(dot(normal, uDirectionalLight), 0.0);
+      vec3 directionalLight = uDirectionalLightColor * directional * textureColor.rgb;
+      
+      // Rim light effect for paper edges
+      float rim = 1.0 - max(dot(vNormal, vViewDirection), 0.0);
+      vec3 rimLight = vec3(0.8) * pow(rim, 2.0) * 0.3;
+      
+      vec3 color = ambient + directionalLight + rimLight;
+      color = clamp(color, 0.0, 1.0);
+      gl_FragColor = vec4(color, textureColor.a);
+    }
+  `;
+  
+  // Initialize shader program
+  function initShader(gl, vsSource, fsSource) {
+    const vertexShader = loadShader(gl, gl.VERTEX_SHADER, vsSource);
+    const fragmentShader = loadShader(gl, gl.FRAGMENT_SHADER, fsSource);
+    const shaderProgram = gl.createProgram();
+    gl.attachShader(shaderProgram, vertexShader);
+    gl.attachShader(shaderProgram, fragmentShader);
+    gl.linkProgram(shaderProgram);
+    if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
+      alert('Unable to initialize the shader program: ' + gl.getProgramInfoLog(shaderProgram));
+      return null;
+    }
+    return shaderProgram;
+  }
+  
+  function loadShader(gl, type, source) {
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+      alert('An error occurred compiling the shaders: ' + gl.getShaderSource(shader));
+      gl.deleteShader(shader);
+      return null;
+    }
+    return shader;
+  }
+  
+  const shaderProgram = initShader(gl, vsSource, fsSource);
+  gl.useProgram(shaderProgram);
+  
+  // Get attribute and uniform locations
+  const positionAttribLoc = gl.getAttribLocation(shaderProgram, 'aVertexPosition');
+  const textureCoordAttribLoc = gl.getAttribLocation(shaderProgram, 'aTextureCoord');
+  const normalAttribLoc = gl.getAttribLocation(shaderProgram, 'aVertexNormal');
+  const modelViewMatrixLoc = gl.getUniformLocation(shaderProgram, 'uModelViewMatrix');
+  const projectionMatrixLoc = gl.getUniformLocation(shaderProgram, 'uProjectionMatrix');
+  const normalMatrixLoc = gl.getUniformLocation(shaderProgram, 'uNormalMatrix');
+  const samplerLoc = gl.getUniformLocation(shaderProgram, 'uSampler');
+  const ambientLightLoc = gl.getUniformLocation(shaderProgram, 'uAmbientLight');
+  const directionalLightLoc = gl.getUniformLocation(shaderProgram, 'uDirectionalLight');
+  const directionalLightColorLoc = gl.getUniformLocation(shaderProgram, 'uDirectionalLightColor');
+  
+  // Cloth simulation parameters
+  const segmentsWidth = 25;
+  const segmentsHeight = 50;
+  const width = 3.0;
+  const height = 6.0;
+  const particleSpacingX = width / segmentsWidth;
+  const particleSpacingY = height / segmentsHeight;
+  const particles = [];
+  const constraints = [];
+  
+  // Initialize particles
+  for (let i = 0; i <= segmentsHeight; i++) {
+    particles[i] = [];
+    for (let j = 0; j <= segmentsWidth; j++) {
+      const x = (j / segmentsWidth - 0.5) * width;
+      const y = -(i / segmentsHeight) * height; // Negative so top is at y=0, hangs down
+      const z = 0;
+      particles[i][j] = {
+        x: x, y: y, z: z,
+        oldX: x, oldY: y, oldZ: z,
+        pinned: (i === 0) // Pin top row
+      };
+    }
+  }
+  
+  // Create structural constraints (to immediate neighbors)
+  function addConstraint(p1, p2) {
+    const dx = p1.x - p2.x;
+    const dy = p1.y - p2.y;
+    const dz = p1.z - p2.z;
+    const distance = Math.sqrt(dx*dx + dy*dy + dz*dz);
+    constraints.push({p1: p1, p2: p2, distance: distance});
+  }
+  
+  for (let i = 0; i <= segmentsHeight; i++) {
+    for (let j = 0; j <= segmentsWidth; j++) {
+      if (i < segmentsHeight) addConstraint(particles[i][j], particles[i+1][j]); // vertical
+      if (j < segmentsWidth) addConstraint(particles[i][j], particles[i][j+1]);   // horizontal
+    }
+  }
+  
+  // Create bend constraints (to neighbors two steps away) for stiffness
+  for (let i = 0; i <= segmentsHeight; i++) {
+    for (let j = 0; j <= segmentsWidth; j++) {
+      if (i < segmentsHeight - 1) addConstraint(particles[i][j], particles[i+2][j]);
+      if (j < segmentsWidth - 1) addConstraint(particles[i][j], particles[i][j+2]);
+    }
+  }
+  
+  // Simulation parameters
+  const gravity = 0.005;
+  const drag = 0.01;
+  const stiffness = 0.8;
+  const iterations = 5;
+  
+  // Buffers for rendering
+  const positions = [];
+  const texCoords = [];
+  const normals = [];
+  const indices = [];
+  
+  // Initialize buffers
+  for (let i = 0; i <= segmentsHeight; i++) {
+    for (let j = 0; j <= segmentsWidth; j++) {
+      const p = particles[i][j];
+      positions.push(p.x, p.y, p.z);
+      texCoords.push(j / segmentsWidth, i / segmentsHeight);
+      normals.push(0, 0, 1); // Will be updated
+    }
+  }
+  
+  for (let i = 0; i < segmentsHeight; i++) {
+    for (let j = 0; j < segmentsWidth; j++) {
+      const topLeft = i * (segmentsWidth+1) + j;
+      const topRight = topLeft + 1;
+      const bottomLeft = (i+1) * (segmentsWidth+1) + j;
+      const bottomRight = bottomLeft + 1;
+      
+      // First triangle
+      indices.push(topLeft, bottomLeft, topRight);
+      // Second triangle
+      indices.push(topRight, bottomLeft, bottomRight);
+    }
+  }
+  
+  // Create and bind buffers
+  const positionBuffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.DYNAMIC_DRAW);
+  
+  const texCoordBuffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, texCoordBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(texCoords), gl.STATIC_DRAW);
+  
+  const normalBuffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, normalBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(normals), gl.DYNAMIC_DRAW);
+  
+  const indexBuffer = gl.createBuffer();
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indices), gl.STATIC_DRAW);
+  
+  // Set up attribute pointers
+  gl.enableVertexAttribArray(positionAttribLoc);
+  gl.vertexAttribPointer(positionAttribLoc, 3, gl.FLOAT, false, 0, 0);
+  
+  gl.enableVertexAttribArray(textureCoordAttribLoc);
+  gl.vertexAttribPointer(textureCoordAttribLoc, 2, gl.FLOAT, false, 0, 0);
+  
+  gl.enableVertexAttribArray(normalAttribLoc);
+  gl.vertexAttribPointer(normalAttribLoc, 3, gl.FLOAT, false, 0, 0);
+  
+  // Set uniforms
+  gl.uniform1i(samplerLoc, 0);
+  gl.uniform3f(ambientLightLoc, 0.3, 0.3, 0.3);
+  gl.uniform3f(directionalLightLoc, 0.5, 0.5, -0.7);
+  gl.uniform3f(directionalLightColorLoc, 0.8, 0.8, 0.9);
+  
+  // Matrix functions
+  function mat4() {
+    return new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]);
+  }
+  
+  function multiplyMat4(a, b) {
+    const result = mat4();
+    for (let i = 0; i < 4; i++) {
+      for (let j = 0; j < 4; j++) {
+        let sum = 0;
+        for (let k = 0; k < 4; k++) {
+          sum += a[i*4+k] * b[k*4+j];
+        }
+        result[i*4+j] = sum;
+      }
+    }
+    return result;
+  }
+  
+  function translateMat4(tx, ty, tz) {
+    const m = mat4();
+    m[12] = tx;
+    m[13] = ty;
+    m[14] = tz;
+    return m;
+  }
+  
+  function rotateXMat4(angle) {
+    const c = Math.cos(angle);
+    const s = Math.sin(angle);
+    const m = mat4();
+    m[5] = c; m[6] = -s;
+    m[9] = s; m[10] = c;
+    return m;
+  }
+  
+  function rotateYMat4(angle) {
+    const c = Math.cos(angle);
+    const s = Math.sin(angle);
+    const m = mat4();
+    m[0] = c; m[2] = s;
+    m[8] = -s; m[10] = c;
+    return m;
+  }
+  
+  function scaleMat4(sx, sy, sz) {
+    const m = mat4();
+    m[0] = sx;
+    m[5] = sy;
+    m[10] = sz;
+    return m;
+  }
+  
+  function mat3FromMat4(m) {
+    return new Float32Array([
+      m[0], m[1], m[2],
+      m[4], m[5], m[6],
+      m[8], m[9], m[10]
+    ]);
+  }
+  
+  function transposeMat3(m) {
+    return new Float32Array([
+      m[0], m[3], m[6],
+      m[1], m[4], m[7],
+      m[2], m[5], m[8]
+    ]);
+  }
+  
+  function invertMat3(m) {
+    const a00 = m[0], a01 = m[1], a02 = m[2];
+    const a10 = m[3], a11 = m[4], a12 = m[5];
+    const a20 = m[6], a21 = m[7], a22 = m[8];
+    
+    const b01 = a22 * a11 - a12 * a21;
+    const b11 = -a22 * a10 + a12 * a20;
+    const b21 = a21 * a10 - a11 * a20;
+    
+    const det = a00 * b01 + a01 * b11 + a02 * b21;
+    if (!det) return null;
+    const invDet = 1.0 / det;
+    
+    return new Float32Array([
+      b01 * invDet,
+      (-a22 * a01 + a02 * a21) * invDet,
+      (a12 * a01 - a02 * a11) * invDet,
+      b11 * invDet,
+      (a22 * a00 - a02 * a20) * invDet,
+      (-a12 * a00 + a02 * a10) * invDet,
+      b21 * invDet,
+      (-a21 * a00 + a01 * a20) * invDet,
+      (a11 * a00 - a01 * a10) * invDet
+    ]);
+  }
+  
+  // Simulation loop
+  let lastTime = 0;
+  let grabbedParticle = null;
+  let grabOffset = {x: 0, y: 0, z: 0};
+  
+  function simulate(time) {
+    time *= 0.001; // convert to seconds
+    const deltaTime = time - lastTime;
+    lastTime = time;
+    
+    // Apply gravity
+    for (let i = 0; i <= segmentsHeight; i++) {
+      for (let j = 0; j <= segmentsWidth; j++) {
+        const p = particles[i][j];
+        if (!p.pinned) {
+          const vx = p.x - p.oldX;
+          const vy = p.y - p.oldY;
+          const vz = p.z - p.oldZ;
+          p.oldX = p.x;
+          p.oldY = p.y;
+          p.oldZ = p.z;
+          p.x += vx * (1 - drag) + 0;
+          p.y += vy * (1 - drag) + gravity;
+          p.z += vz * (1 - drag) + 0;
+        }
+      }
+    }
+    
+    // Satisfy constraints
+    for (let iter = 0; iter < iterations; iter++) {
+      for (const c of constraints) {
+        const p1 = c.p1;
+        const p2 = c.p2;
+        const dx = p2.x - p1.x;
+        const dy = p2.y - p1.y;
+        const dz = p2.z - p1.z;
+        const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
+        const difference = c.distance - dist;
+        const percent = difference / dist / 2;
+        const offsetX = dx * percent * stiffness;
+        const offsetY = dy * percent * stiffness;
+        const offsetZ = dz * percent * stiffness;
+        
+        if (!p1.pinned) {
+          p1.x -= offsetX;
+          p1.y -= offsetY;
+          p1.z -= offsetZ;
+        }
+        if (!p2.pinned) {
+          p2.x += offsetX;
+          p2.y += offsetY;
+          p2.z += offsetZ;
+        }
+      }
+    }
+    
+    // Update grabbed particle position
+    if (grabbedParticle) {
+      grabbedParticle.oldX = grabbedParticle.x - grabOffset.x;
+      grabbedParticle.oldY = grabbedParticle.y - grabOffset.y;
+      grabbedParticle.oldZ = grabbedParticle.z - grabOffset.z;
+    }
+    
+    // Update vertex positions buffer
+    const posArray = new Float32Array(positions.length);
+    let idx = 0;
+    for (let i = 0; i <= segmentsHeight; i++) {
+      for (let j = 0; j <= segmentsWidth; j++) {
+        const p = particles[i][j];
+        posArray[idx++] = p.x;
+        posArray[idx++] = p.y;
+        posArray[idx++] = p.z;
+      }
+    }
+    gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, posArray, gl.DYNAMIC_DRAW);
+    
+    // Update normals buffer
+    // Reset normals
+    for (let i = 0; i < normals.length; i++) normals[i] = 0;
+    // Calculate normals per triangle
+    for (let i = 0; i < indices.length; i += 3) {
+      const i0 = indices[i];
+      const i1 = indices[i+1];
+      const i2 = indices[i+2];
+      
+      const p0 = {x: positions[i0*3], y: positions[i0*3+1], z: positions[i0*3+2]};
+      const p1 = {x: positions[i1*3], y: positions[i1*3+1], z: positions[i1*3+2]};
+      const p2 = {x: positions[i2*3], y: positions[i2*3+1], z: positions[i2*3+2]};
+      
+      const v0 = {x: p1.x - p0.x, y: p1.y - p0.y, z: p1.z - p0.z};
+      const v1 = {x: p2.x - p0.x, y: p2.y - p0.y, z: p2.z - p0.z};
+      
+      const nx = v0.y * v1.z - v0.z * v1.y;
+      const ny = v0.z * v1.x - v0.x * v1.z;
+      const nz = v0.x * v1.y - v0.y * v1.x;
+      
+      normals[i0*3] += nx;
+      normals[i0*3+1] += ny;
+      normals[i0*3+2] += nz;
+      normals[i1*3] += nx;
+      normals[i1*3+1] += ny;
+      normals[i1*3+2] += nz;
+      normals[i2*3] += nx;
+      normals[i2*3+1] += ny;
+      normals[i2*3+2] += nz;
+    }
+    
+    // Normalize normals
+    for (let i = 0; i < normals.length; i += 3) {
+      const len = Math.sqrt(normals[i]*normals[i] + normals[i+1]*normals[i+1] + normals[i+2]*normals[i+2]);
+      if (len > 0) {
+        normals[i] /= len;
+        normals[i+1] /= len;
+        normals[i+2] /= len;
+      }
+    }
+    
+    gl.bindBuffer(gl.ARRAY_BUFFER, normalBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(normals), gl.DYNAMIC_DRAW);
+    
+    // Set up attribute pointers again after buffer recreation
+    gl.enableVertexAttribArray(positionAttribLoc);
+    gl.vertexAttribPointer(positionAttribLoc, 3, gl.FLOAT, false, 0, 0);
+    
+    gl.enableVertexAttribArray(textureCoordAttribLoc);
+    gl.vertexAttribPointer(textureCoordAttribLoc, 2, gl.FLOAT, false, 0, 0);
+    
+    gl.enableVertexAttribArray(normalAttribLoc);
+    gl.vertexAttribPointer(normalAttribLoc, 3, gl.FLOAT, false, 0, 0);
+    
+    // Render
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.enable(gl.DEPTH_TEST);
+    gl.clearColor(0.898, 0.898, 0.898, 1.0); // #e5e5e5
+    
+    // Camera and projection
+    const aspect = canvas.width / canvas.height;
+    const projectionMatrix = mat4();
+    const fov = 45 * Math.PI / 180;
+    const f = 1.0 / Math.tan(fov / 2);
+    const near = 0.1;
+    const far = 100.0;
+    projectionMatrix[0] = f / aspect;
+    projectionMatrix[5] = f;
+    projectionMatrix[10] = (far + near) / (near - far);
+    projectionMatrix[11] = -1;
+    projectionMatrix[14] = (2 * far * near) / (near - far);
+    projectionMatrix[15] = 0;
+    
+    const viewMatrix = translateMat4(0, 0, -8);
+    viewMatrix[0] *= 0.8; viewMatrix[5] *= 0.8; viewMatrix[10] *= 0.8; // slight scale to fit
+    
+    const modelMatrix = mat4();
+    const modelViewMatrix = multiplyMat4(viewMatrix, modelMatrix);
+    const normalMatrix = transposeMat3(invertMat3(mat3FromMat4(modelViewMatrix)));
+    
+    gl.uniformMatrix4fv(projectionMatrixLoc, false, projectionMatrix);
+    gl.uniformMatrix4fv(modelViewMatrixLoc, false, modelViewMatrix);
+    gl.uniformMatrix3fv(normalMatrixLoc, false, normalMatrix);
+    
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
+    gl.drawElements(gl.TRIANGLES, indices.length, gl.UNSIGNED_SHORT, 0);
+    
+    requestAnimationFrame(simulate);
+  }
+  
+  // Pointer event handling
+  canvas.addEventListener('pointerdown', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const x = ((e.clientX - rect.left) / canvas.width) * 2 - 1;
+    const y = -((e.clientY - rect.top) / canvas.height) * 2 + 1;
+    
+    // Find closest particle
+    let minDist = Infinity;
+    let closest = null;
+    for (let i = 0; i <= segmentsHeight; i++) {
+      for (let j = 0; j <= segmentsWidth; j++) {
+        const p = particles[i][j];
+        // Convert world to clip space (simplified)
+        const clipX = p.x * 0.3; // approximate scaling
+        const clipY = p.y * 0.3;
+        const clipZ = p.z * 0.3;
+        const dist = (clipX - x)**2 + (clipY - y)**2 + (clipZ - 0)**2;
+        if (dist < minDist) {
+          minDist = dist;
+          closest = p;
+        }
+      }
+    }
+    
+    if (closest && minDist < 0.01) {
+      grabbedParticle = closest;
+      // Calculate offset in particle space
+      const rect = canvas.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
+      // Approximate world position from screen
+      const worldX = (mouseX / canvas.width - 0.5) * width * 0.3;
+      const worldY = -(mouseY / canvas.height) * height * 0.3;
+      grabOffset.x = closest.x - worldX;
+      grabOffset.y = closest.y - worldY;
+      grabOffset.z = closest.z;
+    }
+  });
+  
+  window.addEventListener('pointermove', (e) => {
+    if (!grabbedParticle) return;
+    const rect = canvas.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+    const worldX = (mouseX / canvas.width - 0.5) * width * 0.3;
+    const worldY = -(mouseY / canvas.height) * height * 0.3;
+    grabbedParticle.x = worldX + grabOffset.x;
+    grabbedParticle.y = worldY + grabOffset.y;
+    grabbedParticle.z = grabOffset.z;
+  });
+  
+  window.addEventListener('pointerup', () => {
+    grabbedParticle = null;
+  });
+  
+  // Handle window resize
+  window.addEventListener('resize', () => {
+    canvas.width = window.innerWidth * 0.8;
+    canvas.height = window.innerHeight * 0.6;
+    gl.viewport(0, 0, canvas.width, canvas.height);
+  });
+  
+  // Initialize canvas size
+  canvas.width = 800;
+  canvas.height = 600;
+  
+  // Start simulation
+  requestAnimationFrame(simulate);
+})();
+</script>
+</body>
+</html>

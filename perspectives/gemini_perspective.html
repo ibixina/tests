@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Naked-Eye 3D - Anamorphic Illusion</title>
+    <style>
+        body {
+            margin: 0;
+            background-color: #fbfbfd;
+            color: #1d1d1f;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            overflow-x: hidden;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        .nav {
+            height: 60px;
+            background: rgba(255, 255, 255, 0.8);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 600;
+            letter-spacing: -0.01em;
+            position: fixed;
+            top: 0; left: 0; right: 0;
+            z-index: 100;
+            border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+        }
+
+        .hero {
+            text-align: center;
+            padding: 140px 20px 40px;
+        }
+
+        .hero h1 {
+            font-size: 56px;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+            margin: 0;
+        }
+
+        .hero p {
+            font-size: 24px;
+            color: #86868b;
+            margin-top: 15px;
+            font-weight: 400;
+        }
+
+        .layout-grid {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 60px;
+            max-width: 1200px;
+            margin: 0 auto 100px;
+            padding: 0 40px;
+            position: relative;
+            z-index: 1;
+        }
+
+        .text-column {
+            flex: 1;
+            max-width: 300px;
+        }
+
+        .text-column h2 {
+            font-size: 28px;
+            margin-bottom: 12px;
+            letter-spacing: -0.01em;
+        }
+
+        .text-column p {
+            font-size: 17px;
+            line-height: 1.47059;
+            color: #86868b;
+        }
+
+        /* The physical screen bounding box */
+        .anamorphic-container {
+            position: relative;
+            width: 460px;
+            height: 560px;
+            flex-shrink: 0;
+            cursor: crosshair;
+            z-index: 2;
+        }
+
+        /* CSS fallback for the hole, provides the drop shadow to anchor it to the page */
+        .bezel-shadow {
+            position: absolute;
+            inset: 0;
+            border-radius: 30px;
+            background: #111; /* Matches the 3D room background to prevent flashes */
+            box-shadow: 
+                0 30px 60px rgba(0,0,0,0.12), 
+                0 10px 20px rgba(0,0,0,0.05);
+        }
+
+        .hint {
+            position: absolute;
+            bottom: -50px;
+            left: 0; right: 0;
+            text-align: center;
+            color: #0071e3;
+            font-weight: 500;
+            font-size: 15px;
+            transition: opacity 0.3s;
+        }
+
+        /* Canvas rendered perfectly on top, extending out to catch shadows */
+        #canvas-container {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            width: 1200px;
+            height: 1200px;
+            pointer-events: none; /* Let hovers pass through to the container */
+            z-index: 10;
+        }
+
+        #loader {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            font-weight: 500;
+            color: #86868b;
+            z-index: 5;
+            transition: opacity 0.5s;
+        }
+    </style>
+    <!-- Import Maps for Three.js -->
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+          "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+        }
+      }
+    </script>
+</head>
+<body>
+
+    <div class="nav">Volumetric Web Experiences</div>
+
+    <div class="hero">
+        <h1>Spatial Depth.</h1>
+        <p>A true naked-eye 3D illusion.</p>
+    </div>
+
+    <div class="layout-grid">
+        <div class="text-column" style="text-align: right;">
+            <h2>Break the bounds.</h2>
+            <p>This typography exists in standard DOM space. The object inside the frame will physically cross over it, casting accurate drop shadows onto this exact text.</p>
+        </div>
+        
+        <div class="anamorphic-container">
+            <div class="bezel-shadow"></div>
+            <div id="loader">Initializing Engine...</div>
+            <div id="canvas-container"></div>
+            <div class="hint">Hover over the frame</div>
+        </div>
+        
+        <div class="text-column">
+            <h2>Seamless overlap.</h2>
+            <p>By synchronizing the CSS box model with the 3D projection matrix, we create a window into another dimension that respects physical lighting rules.</p>
+        </div>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+        // 1. Setup Scene & Perfect Pixel-to-Unit Camera
+        const container = document.getElementById('canvas-container');
+        const loader = document.getElementById('loader');
+        const scene = new THREE.Scene();
+        
+        const width = 1200;
+        const height = 1200;
+        
+        const fov = 45;
+        const camera = new THREE.PerspectiveCamera(fov, width / height, 10, 4000);
+        // Calculate exact distance to map 1 3D unit = 1 pixel at z=0 plane
+        const cameraZ = (height / 2) / Math.tan((fov / 2) * Math.PI / 180);
+        camera.position.set(0, 0, cameraZ);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(width, height);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        container.appendChild(renderer.domElement);
+
+        // Environment Map for highly realistic materials
+        const pmremGenerator = new THREE.PMREMGenerator(renderer);
+        scene.environment = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
+
+        // 2. The Physical Bezel (3D Frame)
+        // We model the frame in 3D so it can RECEIVE shadows correctly, but it will NOT cast them.
+        const frameWidth = 460;
+        const frameHeight = 560;
+        const innerWidth = 400;
+        const innerHeight = 500;
+        const radius = 30;
+        const frameDepth = 20;
+
+        const roundedRectPath = (ctx, x, y, w, h, r) => {
+            ctx.moveTo(x, y + r);
+            ctx.lineTo(x, y + h - r);
+            ctx.quadraticCurveTo(x, y + h, x + r, y + h);
+            ctx.lineTo(x + w - r, y + h);
+            ctx.quadraticCurveTo(x + w, y + h, x + w, y + h - r);
+            ctx.lineTo(x + w, y + r);
+            ctx.quadraticCurveTo(x + w, y, x + w - r, y);
+            ctx.lineTo(x + r, y);
+            ctx.quadraticCurveTo(x, y, x, y + r);
+        };
+
+        const frameShape = new THREE.Shape();
+        roundedRectPath(frameShape, -frameWidth/2, -frameHeight/2, frameWidth, frameHeight, radius);
+        
+        const holePath = new THREE.Path();
+        // Sharp inner hole for maximum contrast like a screen bezel
+        holePath.moveTo(-innerWidth/2, -innerHeight/2);
+        holePath.lineTo(innerWidth/2, -innerHeight/2);
+        holePath.lineTo(innerWidth/2, innerHeight/2);
+        holePath.lineTo(-innerWidth/2, innerHeight/2);
+        holePath.lineTo(-innerWidth/2, -innerHeight/2);
+        frameShape.holes.push(holePath);
+
+        const frameGeo = new THREE.ExtrudeGeometry(frameShape, {
+            depth: frameDepth,
+            bevelEnabled: true,
+            bevelSegments: 8,
+            steps: 1,
+            bevelSize: 2,
+            bevelThickness: 2
+        });
+        // Position front face exactly at z=0
+        frameGeo.translate(0, 0, -frameDepth); 
+
+        const bezelMat = new THREE.MeshStandardMaterial({ 
+            color: 0xffffff,
+            roughness: 0.15,
+            metalness: 0.1
+        });
+        const frame = new THREE.Mesh(frameGeo, bezelMat);
+        frame.receiveShadow = true;
+        frame.castShadow = false; // Prevents weird cast shadows; CSS handles the outer drop shadow
+        scene.add(frame);
+
+        // 3. The Shadow Catcher (Page Background)
+        // Catches shadows cast OUTSIDE the frame onto the web page text/background
+        const catcherShape = new THREE.Shape();
+        catcherShape.moveTo(-2000, -2000);
+        catcherShape.lineTo(2000, -2000);
+        catcherShape.lineTo(2000, 2000);
+        catcherShape.lineTo(-2000, 2000);
+        catcherShape.lineTo(-2000, -2000);
+
+        const catcherHole = new THREE.Path();
+        // The catcher hole matches the OUTER bounds of the frame, so the frame catches its own shadows
+        roundedRectPath(catcherHole, -frameWidth/2, -frameHeight/2, frameWidth, frameHeight, radius);
+        catcherShape.holes.push(catcherHole);
+
+        const shadowCatcher = new THREE.Mesh(
+            new THREE.ShapeGeometry(catcherShape), 
+            new THREE.ShadowMaterial({ opacity: 0.12 })
+        );
+        shadowCatcher.position.z = 0; 
+        shadowCatcher.receiveShadow = true;
+        scene.add(shadowCatcher);
+
+        // 4. The Deep Room (Interior Box)
+        const roomDepth = 500;
+        const wallMat = new THREE.MeshStandardMaterial({ 
+            color: 0x111111, 
+            roughness: 0.8,
+            metalness: 0.2
+        });
+
+        const walls = new THREE.Group();
+        const wallZStart = -frameDepth; // Start exactly behind the frame
+
+        const leftWall = new THREE.Mesh(new THREE.PlaneGeometry(roomDepth, innerHeight), wallMat);
+        leftWall.position.set(-innerWidth/2, 0, wallZStart - roomDepth/2);
+        leftWall.rotation.y = Math.PI / 2;
+        leftWall.receiveShadow = true;
+        walls.add(leftWall);
+
+        const rightWall = new THREE.Mesh(new THREE.PlaneGeometry(roomDepth, innerHeight), wallMat);
+        rightWall.position.set(innerWidth/2, 0, wallZStart - roomDepth/2);
+        rightWall.rotation.y = -Math.PI / 2;
+        rightWall.receiveShadow = true;
+        walls.add(rightWall);
+
+        const topWall = new THREE.Mesh(new THREE.PlaneGeometry(innerWidth, roomDepth), wallMat);
+        topWall.position.set(0, innerHeight/2, wallZStart - roomDepth/2);
+        topWall.rotation.x = Math.PI / 2;
+        topWall.receiveShadow = true;
+        walls.add(topWall);
+
+        const bottomWall = new THREE.Mesh(new THREE.PlaneGeometry(innerWidth, roomDepth), wallMat);
+        bottomWall.position.set(0, -innerHeight/2, wallZStart - roomDepth/2);
+        bottomWall.rotation.x = -Math.PI / 2;
+        bottomWall.receiveShadow = true;
+        walls.add(bottomWall);
+
+        const backWall = new THREE.Mesh(new THREE.PlaneGeometry(innerWidth, innerHeight), wallMat);
+        backWall.position.set(0, 0, wallZStart - roomDepth);
+        backWall.receiveShadow = true;
+        walls.add(backWall);
+        
+        // Perspective Grid Lines for strong depth cues
+        const gridFloor = new THREE.GridHelper(innerWidth, 15, 0x333333, 0x333333);
+        gridFloor.position.set(0, -innerHeight/2 + 1, wallZStart - roomDepth/2);
+        walls.add(gridFloor);
+        
+        const gridCeiling = new THREE.GridHelper(innerWidth, 15, 0x333333, 0x333333);
+        gridCeiling.position.set(0, innerHeight/2 - 1, wallZStart - roomDepth/2);
+        walls.add(gridCeiling);
+
+        scene.add(walls);
+
+        // 5. The Volumetric Subject (Quantum Core)
+        const objectGroup = new THREE.Group();
+
+        // Glowing Core
+        const coreMat = new THREE.MeshStandardMaterial({
+            color: 0x00d9ff,
+            emissive: 0x00d9ff,
+            emissiveIntensity: 1.5,
+            roughness: 0.1,
+            metalness: 0.8
+        });
+        const core = new THREE.Mesh(new THREE.OctahedronGeometry(35, 0), coreMat);
+        core.castShadow = true;
+        objectGroup.add(core);
+
+        // Wireframe Shell
+        const shellMat = new THREE.MeshStandardMaterial({
+            color: 0xff2a5f,
+            roughness: 0.3,
+            metalness: 0.8,
+            wireframe: true,
+            transparent: true,
+            opacity: 0.8
+        });
+        const shell = new THREE.Mesh(new THREE.IcosahedronGeometry(90, 1), shellMat);
+        shell.castShadow = true;
+        objectGroup.add(shell);
+
+        // Orbiting Rings
+        const ringGeo = new THREE.TorusGeometry(140, 3, 16, 100);
+        const ringMat = new THREE.MeshStandardMaterial({ 
+            color: 0xffffff, 
+            roughness: 0.1,
+            metalness: 0.9 
+        });
+        
+        const ring1 = new THREE.Mesh(ringGeo, ringMat);
+        ring1.castShadow = true;
+        objectGroup.add(ring1);
+
+        const ring2 = new THREE.Mesh(ringGeo, ringMat);
+        ring2.rotation.x = Math.PI / 2;
+        ring2.castShadow = true;
+        objectGroup.add(ring2);
+
+        // Initial position deep inside the room
+        objectGroup.position.z = -250;
+        scene.add(objectGroup);
+
+        // 6. Lighting
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+        scene.add(ambientLight);
+
+        // Key Light: High contrast, moved further forward to cast shadows from the popped-out object
+        const dirLight = new THREE.DirectionalLight(0xffffff, 2.5);
+        dirLight.position.set(400, 600, 1200); 
+        dirLight.target.position.set(0, 0, 0); 
+        dirLight.castShadow = true;
+        dirLight.shadow.mapSize.width = 2048;
+        dirLight.shadow.mapSize.height = 2048;
+        dirLight.shadow.camera.near = 100;
+        dirLight.shadow.camera.far = 2500;
+        const d = 600; // Frustum covers the frame and surrounding text
+        dirLight.shadow.camera.left = -d;
+        dirLight.shadow.camera.right = d;
+        dirLight.shadow.camera.top = d;
+        dirLight.shadow.camera.bottom = -d;
+        dirLight.shadow.bias = -0.0005;
+        scene.add(dirLight);
+        scene.add(dirLight.target);
+
+        // Interior Fill Light (Cyan & Pink)
+        const fill1 = new THREE.PointLight(0x00d9ff, 1, 600);
+        fill1.position.set(-150, -100, -200);
+        scene.add(fill1);
+        
+        const fill2 = new THREE.PointLight(0xff2a5f, 1, 600);
+        fill2.position.set(150, 150, -300);
+        scene.add(fill2);
+
+        // Remove loader
+        loader.style.opacity = '0';
+        setTimeout(() => loader.remove(), 500);
+
+        // 7. Interaction & Animation
+        const hitZone = document.querySelector('.anamorphic-container');
+        let isPoppedOut = false;
+        let targetZ = -250;
+        let mouseX = 0;
+        let mouseY = 0;
+
+        window.addEventListener('mousemove', (e) => {
+            mouseX = (e.clientX / window.innerWidth) * 2 - 1;
+            mouseY = -(e.clientY / window.innerHeight) * 2 + 1;
+        });
+
+        const activate = () => { 
+            isPoppedOut = true; 
+            targetZ = 600; // Float physically OUT of the screen massively
+        };
+        const deactivate = () => { 
+            isPoppedOut = false; 
+            targetZ = -250; 
+        };
+
+        hitZone.addEventListener('mouseenter', activate);
+        hitZone.addEventListener('mouseleave', deactivate);
+        hitZone.addEventListener('touchstart', (e) => { e.preventDefault(); activate(); });
+        hitZone.addEventListener('touchend', deactivate);
+
+        const clock = new THREE.Clock();
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const time = clock.getElapsedTime();
+
+            // Internal mechanism rotation
+            core.rotation.y = time * 0.5;
+            core.rotation.x = Math.sin(time * 0.3) * 0.5;
+            
+            shell.rotation.z = time * 0.4;
+            shell.rotation.x = time * 0.2;
+
+            ring1.rotation.y = time * 1.2;
+            ring1.rotation.z = Math.sin(time * 0.5) * 0.2;
+            
+            ring2.rotation.x = time * 0.8;
+            ring2.rotation.z = Math.cos(time * 0.5) * 0.2;
+
+            // Z-axis movement easing (The Illusion Pop Out)
+            objectGroup.position.z += (targetZ - objectGroup.position.z) * 0.06;
+
+            // Subtle Parallax (Shifts object against background, keeping frame rigid)
+            // Allow more dramatic shift when the object is physically outside the frame
+            const zProgress = Math.max(0, objectGroup.position.z / 600);
+            const targetX = mouseX * (30 + 80 * zProgress);
+            const targetY = mouseY * (30 + 80 * zProgress);
+            
+            objectGroup.position.x += (targetX - objectGroup.position.x) * 0.05;
+            objectGroup.position.y += (targetY - objectGroup.position.y) * 0.05;
+
+            // Hover float
+            objectGroup.position.y += Math.sin(time * 2) * 2;
+
+            renderer.render(scene, camera);
+        }
+        
+        animate();
+    </script>
+</body>
+</html>

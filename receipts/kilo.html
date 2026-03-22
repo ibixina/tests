@@ -1,0 +1,658 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive 3D Receipt</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #e5e5e5;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            font-family: monospace;
+            overflow: hidden;
+        }
+        canvas { display: block; }
+        #instruction {
+            margin-top: 20px;
+            color: #999;
+            font-size: 14px;
+            letter-spacing: 1px;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="glCanvas"></canvas>
+    <div id="instruction">Grab and drag the receipt</div>
+
+    <script>
+const canvas = document.getElementById('glCanvas');
+const gl = canvas.getContext('webgl', { antialias: true, preserveDrawingBuffer: true });
+
+canvas.width = 800;
+canvas.height = 600;
+gl.viewport(0, 0, canvas.width, canvas.height);
+
+const vsSource = `
+    attribute vec3 aPosition;
+    attribute vec3 aNormal;
+    attribute vec2 aTexCoord;
+    uniform mat4 uModelView;
+    uniform mat4 uProjection;
+    uniform mat3 uNormalMatrix;
+    varying vec3 vNormal;
+    varying vec3 vPosition;
+    varying vec2 vTexCoord;
+    void main() {
+        vec4 mvPosition = uModelView * vec4(aPosition, 1.0);
+        vPosition = mvPosition.xyz;
+        vNormal = uNormalMatrix * aNormal;
+        vTexCoord = aTexCoord;
+        gl_Position = uProjection * mvPosition;
+    }
+`;
+
+const fsSource = `
+    precision mediump float;
+    varying vec3 vNormal;
+    varying vec3 vPosition;
+    varying vec2 vTexCoord;
+    uniform sampler2D uTexture;
+    uniform vec3 uLightDir;
+    uniform vec3 uAmbient;
+    uniform vec3 uDiffuse;
+    uniform vec3 uLightColor;
+    void main() {
+        vec3 normal = normalize(vNormal);
+        vec3 lightDir = normalize(uLightDir);
+        float diff = max(dot(normal, lightDir), 0.0);
+        vec3 ambient = uAmbient * uLightColor;
+        vec3 diffuse = uDiffuse * diff * uLightColor;
+        vec3 paperColor = texture2D(uTexture, vTexCoord).rgb;
+        vec3 finalColor = paperColor * (ambient + diffuse);
+        gl_FragColor = vec4(finalColor, 1.0);
+    }
+`;
+
+function createShader(type, source) {
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        console.error(gl.getShaderInfoLog(shader));
+        gl.deleteShader(shader);
+        return null;
+    }
+    return shader;
+}
+
+const vs = createShader(gl.VERTEX_SHADER, vsSource);
+const fs = createShader(gl.FRAGMENT_SHADER, fsSource);
+const program = gl.createProgram();
+gl.attachShader(program, vs);
+gl.attachShader(program, fs);
+gl.linkProgram(program);
+gl.useProgram(program);
+
+const aPosition = gl.getAttribLocation(program, 'aPosition');
+const aNormal = gl.getAttribLocation(program, 'aNormal');
+const aTexCoord = gl.getAttribLocation(program, 'aTexCoord');
+const uModelView = gl.getUniformLocation(program, 'uModelView');
+const uProjection = gl.getUniformLocation(program, 'uProjection');
+const uNormalMatrix = gl.getUniformLocation(program, 'uNormalMatrix');
+const uTexture = gl.getUniformLocation(program, 'uTexture');
+const uLightDir = gl.getUniformLocation(program, 'uLightDir');
+const uAmbient = gl.getUniformLocation(program, 'uAmbient');
+const uDiffuse = gl.getUniformLocation(program, 'uDiffuse');
+const uLightColor = gl.getUniformLocation(program, 'uLightColor');
+
+gl.enable(gl.DEPTH_TEST);
+gl.enable(gl.CULL_FACE);
+gl.cullFace(gl.BACK);
+
+function createReceiptTexture() {
+    const texCanvas = document.createElement('canvas');
+    texCanvas.width = 512;
+    texCanvas.height = 900;
+    const ctx = texCanvas.getContext('2d');
+    
+    ctx.fillStyle = '#f5f5f0';
+    ctx.fillRect(0, 0, 512, 900);
+    
+    ctx.fillStyle = '#222';
+    ctx.font = 'bold 28px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('THE FLORNRM SHOP', 256, 80);
+    
+    ctx.font = '16px monospace';
+    ctx.fillText('42 Mesh Lane, WebGL City', 256, 115);
+    ctx.fillText('Tel: (555) 042-1337', 256, 140);
+    
+    ctx.strokeStyle = '#444';
+    ctx.setLineDash([8, 4]);
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(40, 170);
+    ctx.lineTo(472, 170);
+    ctx.stroke();
+    
+    ctx.setLineDash([]);
+    ctx.font = '14px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText('Date: 2026-02-23  14:17', 40, 210);
+    ctx.fillText('Order: #00382', 40, 235);
+    
+    ctx.beginPath();
+    ctx.moveTo(40, 260);
+    ctx.lineTo(472, 260);
+    ctx.stroke();
+    
+    ctx.textAlign = 'left';
+    const items = [
+        ['Vertex Shader', '$4.20', 300],
+        ['Fragment Shader', '$3.50', 330],
+        ['Normal Map', '$2.80', 360],
+        ['UV Unwrap', '$1.50', 390],
+        ['Cloth Simulation', '$6.00', 420]
+    ];
+    
+    items.forEach(([name, price, y]) => {
+        ctx.fillText(name, 40, y);
+        ctx.textAlign = 'right';
+        ctx.fillText(price, 472, y);
+        ctx.textAlign = 'left';
+    });
+    
+    ctx.beginPath();
+    ctx.moveTo(40, 450);
+    ctx.lineTo(472, 450);
+    ctx.stroke();
+    
+    ctx.textAlign = 'right';
+    ctx.fillText('Subtotal', 350, 480);
+    ctx.fillText('$18.00', 472, 480);
+    ctx.fillText('Tax (8%)', 350, 510);
+    ctx.fillText('$1.44', 472, 510);
+    
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(40, 530);
+    ctx.lineTo(472, 530);
+    ctx.stroke();
+    
+    ctx.font = 'bold 16px monospace';
+    ctx.fillText('TOTAL', 350, 565);
+    ctx.fillText('$19.44', 472, 565);
+    
+    ctx.font = '14px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('Thank you for visiting!', 256, 820);
+    
+    ctx.font = '12px monospace';
+    ctx.fillStyle = '#666';
+    ctx.fillText('Made by Kilo', 256, 850);
+    
+    const texture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, texCanvas);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    return texture;
+}
+
+const receiptTexture = createReceiptTexture();
+
+const COLS = 25;
+const ROWS = 50;
+const REST_DIST_X = 3 / (COLS - 1);
+const REST_DIST_Y = 6 / (ROWS - 1);
+const GRAVITY = -0.0008;
+const DAMPING = 0.98;
+const CONSTRAINT_ITERATIONS = 8;
+
+class Particle {
+    constructor(x, y, z, pinned = false) {
+        this.pos = [x, y, z];
+        this.prev = [x, y, z];
+        this.pinned = pinned;
+        this.mass = 1;
+    }
+    
+    update() {
+        if (this.pinned) return;
+        
+        const vx = (this.pos[0] - this.prev[0]) * DAMPING;
+        const vy = (this.pos[1] - this.prev[1]) * DAMPING;
+        const vz = (this.pos[2] - this.prev[2]) * DAMPING;
+        
+        this.prev[0] = this.pos[0];
+        this.prev[1] = this.pos[1];
+        this.prev[2] = this.pos[2];
+        
+        this.pos[0] += vx;
+        this.pos[1] += vy + GRAVITY;
+        this.pos[2] += vz;
+    }
+}
+
+const particles = [];
+for (let j = 0; j < ROWS; j++) {
+    for (let i = 0; i < COLS; i++) {
+        const x = (i / (COLS - 1) - 0.5) * 3;
+        const y = 2.5 - (j / (ROWS - 1)) * 6;
+        const z = 0;
+        const pinned = j === 0;
+        particles.push(new Particle(x, y, z, pinned));
+    }
+}
+
+function getIndex(i, j) {
+    return j * COLS + i;
+}
+
+function satisfyConstraint(p1, p2, restLength) {
+    const dx = p2.pos[0] - p1.pos[0];
+    const dy = p2.pos[1] - p1.pos[1];
+    const dz = p2.pos[2] - p1.pos[2];
+    const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    
+    if (dist < 0.0001) return;
+    
+    const diff = (restLength - dist) / dist;
+    const offsetX = dx * diff * 0.5;
+    const offsetY = dy * diff * 0.5;
+    const offsetZ = dz * diff * 0.5;
+    
+    if (!p1.pinned) {
+        p1.pos[0] -= offsetX;
+        p1.pos[1] -= offsetY;
+        p1.pos[2] -= offsetZ;
+    }
+    if (!p2.pinned) {
+        p2.pos[0] += offsetX;
+        p2.pos[1] += offsetY;
+        p2.pos[2] += offsetZ;
+    }
+}
+
+function updateConstraints() {
+    for (let j = 0; j < ROWS; j++) {
+        for (let i = 0; i < COLS; i++) {
+            if (i < COLS - 1) {
+                satisfyConstraint(particles[getIndex(i, j)], particles[getIndex(i + 1, j)], REST_DIST_X);
+            }
+            if (j < ROWS - 1) {
+                satisfyConstraint(particles[getIndex(i, j)], particles[getIndex(i, j + 1)], REST_DIST_Y);
+            }
+            if (i < COLS - 1 && j < ROWS - 1) {
+                satisfyConstraint(particles[getIndex(i, j)], particles[getIndex(i + 1, j + 1)], Math.sqrt(REST_DIST_X * REST_DIST_X + REST_DIST_Y * REST_DIST_Y));
+                satisfyConstraint(particles[getIndex(i + 1, j)], particles[getIndex(i, j + 1)], Math.sqrt(REST_DIST_X * REST_DIST_X + REST_DIST_Y * REST_DIST_Y));
+            }
+        }
+    }
+}
+
+let grabbedParticle = null;
+let grabIndicator = null;
+
+function getMousePos(e) {
+    const rect = canvas.getBoundingClientRect();
+    return {
+        x: ((e.clientX - rect.left) / rect.width) * 2 - 1,
+        y: -((e.clientY - rect.top) / rect.height) * 2 + 1
+    };
+}
+
+function raycast(x, y) {
+    const proj = perspective(45, canvas.width / canvas.height, 0.1, 100);
+    const view = lookAt([0, 0, 8], [0, -1, 0], [0, 1, 0]);
+    const invProj = invertMatrix(proj);
+    const invView = invertMatrix(view);
+    
+    const rayClip = [x, y, -1, 1];
+    const rayEye = [
+        invProj[0] * rayClip[0] + invProj[4] * rayClip[1] + invProj[8] * rayClip[2] + invProj[12] * rayClip[3],
+        invProj[1] * rayClip[0] + invProj[5] * rayClip[1] + invProj[9] * rayClip[2] + invProj[13] * rayClip[3],
+        -1, 0
+    ];
+    
+    const rayWorld = [
+        invView[0] * rayEye[0] + invView[4] * rayEye[1] + invView[8] * rayEye[2],
+        invView[1] * rayEye[0] + invView[5] * rayEye[1] + invView[9] * rayEye[2],
+        invView[2] * rayEye[0] + invView[6] * rayEye[1] + invView[10] * rayEye[2]
+    ];
+    
+    const len = Math.sqrt(rayWorld[0] ** 2 + rayWorld[1] ** 2 + rayWorld[2] ** 2);
+    const rayDir = [rayWorld[0] / len, rayWorld[1] / len, rayWorld[2] / len];
+    
+    let closest = null;
+    let closestDist = Infinity;
+    
+    for (const p of particles) {
+        const toParticle = [p.pos[0], p.pos[1] + 1, p.pos[2] - 8];
+        const t = -(toParticle[0] * rayDir[0] + toParticle[1] * rayDir[1] + toParticle[2] * rayDir[2]) / 
+                  (rayDir[0] ** 2 + rayDir[1] ** 2 + rayDir[2] ** 2);
+        
+        if (t > 0 && t < closestDist) {
+            closestDist = t;
+            closest = p;
+        }
+    }
+    
+    return closest;
+}
+
+canvas.addEventListener('pointerdown', (e) => {
+    const pos = getMousePos(e);
+    grabbedParticle = raycast(pos.x, pos.y);
+    if (grabbedParticle) {
+        grabIndicator = { pos: [...grabbedParticle.pos] };
+    }
+});
+
+canvas.addEventListener('pointermove', (e) => {
+    if (grabbedParticle) {
+        const pos = getMousePos(e);
+        grabbedParticle.pos[0] = pos.x * 4;
+        grabbedParticle.pos[1] = -pos.y * 3 + 1;
+        grabbedParticle.pos[2] = 0;
+    }
+});
+
+canvas.addEventListener('pointerup', () => {
+    grabbedParticle = null;
+    grabIndicator = null;
+});
+
+canvas.addEventListener('pointerleave', () => {
+    grabbedParticle = null;
+    grabIndicator = null;
+});
+
+function perspective(fov, aspect, near, far) {
+    const f = 1.0 / Math.tan(fov * Math.PI / 360);
+    const nf = 1 / (near - far);
+    return [
+        f / aspect, 0, 0, 0,
+        0, f, 0, 0,
+        0, 0, (far + near) * nf, -1,
+        0, 0, 2 * far * near * nf, 0
+    ];
+}
+
+function lookAt(eye, center, up) {
+    const z = normalize([eye[0] - center[0], eye[1] - center[1], eye[2] - center[2]]);
+    const x = normalize(cross(up, z));
+    const y = cross(z, x);
+    return [
+        x[0], y[0], z[0], 0,
+        x[1], y[1], z[1], 0,
+        x[2], y[2], z[2], 0,
+        -dot(x, eye), -dot(y, eye), -dot(z, eye), 1
+    ];
+}
+
+function normalize(v) {
+    const len = Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    return [v[0] / len, v[1] / len, v[2] / len];
+}
+
+function cross(a, b) {
+    return [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0]
+    ];
+}
+
+function dot(a, b) {
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+function invertMatrix(m) {
+    const inv = new Array(16);
+    inv[0] = m[5] * m[10] * m[15] - m[5] * m[11] * m[14] - m[9] * m[6] * m[15] + m[9] * m[7] * m[14] + m[13] * m[6] * m[11] - m[13] * m[7] * m[10];
+    inv[4] = -m[4] * m[10] * m[15] + m[4] * m[11] * m[14] + m[8] * m[6] * m[15] - m[8] * m[7] * m[14] - m[12] * m[6] * m[11] + m[12] * m[7] * m[10];
+    inv[8] = m[4] * m[9] * m[15] - m[4] * m[11] * m[13] - m[8] * m[5] * m[15] + m[8] * m[7] * m[13] + m[12] * m[5] * m[11] - m[12] * m[7] * m[9];
+    inv[12] = -m[4] * m[9] * m[14] + m[4] * m[10] * m[13] + m[8] * m[5] * m[14] - m[8] * m[6] * m[13] - m[12] * m[5] * m[10] + m[12] * m[6] * m[9];
+    inv[1] = -m[1] * m[10] * m[15] + m[1] * m[11] * m[14] + m[9] * m[2] * m[15] - m[9] * m[3] * m[14] - m[13] * m[2] * m[11] + m[13] * m[3] * m[10];
+    inv[5] = m[0] * m[10] * m[15] - m[0] * m[11] * m[14] - m[8] * m[2] * m[15] + m[8] * m[3] * m[14] + m[12] * m[2] * m[11] - m[12] * m[3] * m[10];
+    inv[9] = -m[0] * m[9] * m[15] + m[0] * m[11] * m[13] + m[8] * m[1] * m[15] - m[8] * m[3] * m[13] - m[12] * m[1] * m[11] + m[12] * m[3] * m[9];
+    inv[13] = m[0] * m[9] * m[14] - m[0] * m[10] * m[13] - m[8] * m[1] * m[14] + m[8] * m[2] * m[13] + m[12] * m[1] * m[10] - m[12] * m[2] * m[9];
+    inv[2] = m[1] * m[6] * m[15] - m[1] * m[7] * m[14] - m[5] * m[2] * m[15] + m[5] * m[3] * m[14] + m[13] * m[2] * m[7] - m[13] * m[3] * m[6];
+    inv[6] = -m[0] * m[6] * m[15] + m[0] * m[7] * m[14] + m[4] * m[2] * m[15] - m[4] * m[3] * m[14] - m[12] * m[2] * m[7] + m[12] * m[3] * m[6];
+    inv[10] = m[0] * m[5] * m[15] - m[0] * m[7] * m[13] - m[4] * m[1] * m[15] + m[4] * m[3] * m[13] + m[12] * m[1] * m[7] - m[12] * m[3] * m[5];
+    inv[14] = -m[0] * m[5] * m[14] + m[0] * m[6] * m[13] + m[4] * m[1] * m[14] - m[4] * m[2] * m[13] - m[12] * m[1] * m[6] + m[12] * m[2] * m[5];
+    inv[3] = -m[1] * m[6] * m[11] + m[1] * m[7] * m[10] + m[5] * m[2] * m[11] - m[5] * m[3] * m[10] - m[9] * m[2] * m[7] + m[9] * m[3] * m[6];
+    inv[7] = m[0] * m[6] * m[11] - m[0] * m[7] * m[10] - m[4] * m[2] * m[11] + m[4] * m[3] * m[10] + m[8] * m[2] * m[7] - m[8] * m[3] * m[6];
+    inv[11] = -m[0] * m[5] * m[11] + m[0] * m[7] * m[9] + m[4] * m[1] * m[11] - m[4] * m[3] * m[9] - m[8] * m[1] * m[7] + m[8] * m[3] * m[5];
+    inv[15] = m[0] * m[5] * m[10] - m[0] * m[6] * m[9] - m[4] * m[1] * m[10] + m[4] * m[2] * m[9] + m[8] * m[1] * m[6] - m[8] * m[2] * m[5];
+    
+    let det = m[0] * inv[0] + m[1] * inv[4] + m[2] * inv[8] + m[3] * inv[12];
+    if (det === 0) return m;
+    det = 1.0 / det;
+    
+    for (let i = 0; i < 16; i++) inv[i] *= det;
+    return inv;
+}
+
+function getNormalMatrix(modelView) {
+    const a = modelView;
+    const a00 = a[0], a01 = a[1], a02 = a[2];
+    const a10 = a[4], a11 = a[5], a12 = a[6];
+    const a20 = a[8], a21 = a[9], a22 = a[10];
+    const b01 = a22 * a11 - a12 * a21;
+    const b11 = -a22 * a10 + a12 * a20;
+    const b21 = a21 * a10 - a11 * a20;
+    let det = a00 * b01 + a01 * b11 + a02 * b21;
+    if (!det) det = 1;
+    det = 1.0 / det;
+    return [
+        b01 * det,
+        (-a22 * a01 + a02 * a21) * det,
+        (a12 * a01 - a02 * a11) * det,
+        b11 * det,
+        (a22 * a00 - a02 * a20) * det,
+        (-a12 * a00 + a02 * a10) * det,
+        b21 * det,
+        (-a21 * a00 + a01 * a20) * det,
+        (a11 * a00 - a01 * a10) * det
+    ];
+}
+
+function computeNormals() {
+    const normals = new Array(particles.length).fill(null).map(() => [0, 0, 0]);
+    
+    for (let j = 0; j < ROWS - 1; j++) {
+        for (let i = 0; i < COLS - 1; i++) {
+            const idx = getIndex(i, j);
+            const p0 = particles[idx].pos;
+            const p1 = particles[getIndex(i + 1, j)].pos;
+            const p2 = particles[getIndex(i, j + 1)].pos;
+            
+            const v1 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+            const v2 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
+            
+            const n = cross(v1, v2);
+            
+            normals[idx][0] += n[0]; normals[idx][1] += n[1]; normals[idx][2] += n[2];
+            normals[getIndex(i + 1, j)][0] += n[0]; normals[getIndex(i + 1, j)][1] += n[1]; normals[getIndex(i + 1, j)][2] += n[2];
+            normals[getIndex(i, j + 1)][0] += n[0]; normals[getIndex(i, j + 1)][1] += n[1]; normals[getIndex(i, j + 1)][2] += n[2];
+            normals[getIndex(i + 1, j + 1)][0] += n[0]; normals[getIndex(i + 1, j + 1)][1] += n[1]; normals[getIndex(i + 1, j + 1)][2] += n[2];
+        }
+    }
+    
+    for (let i = 0; i < normals.length; i++) {
+        const len = Math.sqrt(normals[i][0] ** 2 + normals[i][1] ** 2 + normals[i][2] ** 2);
+        if (len > 0) {
+            normals[i][0] /= len;
+            normals[i][1] /= len;
+            normals[i][2] /= len;
+        }
+    }
+    return normals;
+}
+
+const positionBuffer = gl.createBuffer();
+const normalBuffer = gl.createBuffer();
+const texCoordBuffer = gl.createBuffer();
+const indexBuffer = gl.createBuffer();
+
+const indices = [];
+for (let j = 0; j < ROWS - 1; j++) {
+    for (let i = 0; i < COLS - 1; i++) {
+        const a = getIndex(i, j);
+        const b = getIndex(i + 1, j);
+        const c = getIndex(i, j + 1);
+        const d = getIndex(i + 1, j + 1);
+        indices.push(a, b, c, b, d, c);
+    }
+}
+gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
+gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indices), gl.STATIC_DRAW);
+
+const texCoords = [];
+for (let j = 0; j < ROWS; j++) {
+    for (let i = 0; i < COLS; i++) {
+        texCoords.push(i / (COLS - 1), 1 - j / (ROWS - 1));
+    }
+}
+gl.bindBuffer(gl.ARRAY_BUFFER, texCoordBuffer);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(texCoords), gl.STATIC_DRAW);
+
+let lastTime = 0;
+function animate(time) {
+    const deltaTime = time - lastTime;
+    lastTime = time;
+    
+    for (const p of particles) {
+        p.update();
+    }
+    
+    for (let iter = 0; iter < CONSTRAINT_ITERATIONS; iter++) {
+        updateConstraints();
+    }
+    
+    render();
+    requestAnimationFrame(animate);
+}
+
+function render() {
+    gl.clearColor(0.898, 0.898, 0.898, 1.0);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    
+    gl.disable(gl.CULL_FACE);
+    
+    const positions = [];
+    for (const p of particles) {
+        positions.push(p.pos[0], p.pos[1], p.pos[2]);
+    }
+    gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.DYNAMIC_DRAW);
+    gl.enableVertexAttribArray(aPosition);
+    gl.vertexAttribPointer(aPosition, 3, gl.FLOAT, false, 0, 0);
+    
+    const normals = computeNormals();
+    const normalData = [];
+    for (const n of normals) {
+        normalData.push(n[0], n[1], n[2]);
+    }
+    gl.bindBuffer(gl.ARRAY_BUFFER, normalBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(normalData), gl.DYNAMIC_DRAW);
+    gl.enableVertexAttribArray(aNormal);
+    gl.vertexAttribPointer(aNormal, 3, gl.FLOAT, false, 0, 0);
+    
+    gl.bindBuffer(gl.ARRAY_BUFFER, texCoordBuffer);
+    gl.enableVertexAttribArray(aTexCoord);
+    gl.vertexAttribPointer(aTexCoord, 2, gl.FLOAT, false, 0, 0);
+    
+    const projection = perspective(45, canvas.width / canvas.height, 0.1, 100);
+    const modelView = lookAt([0, 0, 8], [0, -1, 0], [0, 1, 0]);
+    const normalMatrix = getNormalMatrix(modelView);
+    
+    gl.uniformMatrix4fv(uProjection, false, new Float32Array(projection));
+    gl.uniformMatrix4fv(uModelView, false, new Float32Array(modelView));
+    gl.uniformMatrix3fv(uNormalMatrix, false, new Float32Array(normalMatrix));
+    
+    gl.uniform3fv(uLightDir, new Float32Array([0.5, 1, 0.8]));
+    gl.uniform3fv(uAmbient, new Float32Array([0.4, 0.4, 0.4]));
+    gl.uniform3fv(uDiffuse, new Float32Array([0.6, 0.6, 0.6]));
+    gl.uniform3fv(uLightColor, new Float32Array([1, 0.98, 0.95]));
+    
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, receiptTexture);
+    gl.uniform1i(uTexture, 0);
+    
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
+    gl.drawElements(gl.TRIANGLES, indices.length, gl.UNSIGNED_SHORT, 0);
+    
+    if (grabIndicator) {
+        const idx = indices.length;
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+        
+        const grabPos = grabbedParticle.pos;
+        const grabSize = 0.08;
+        
+        const grabVerts = [];
+        const grabNorms = [];
+        const grabTex = [];
+        const grabInds = [];
+        
+        for (let i = 0; i <= 12; i++) {
+            const angle = (i / 12) * Math.PI * 2;
+            const x = grabPos[0] + Math.cos(angle) * grabSize;
+            const y = grabPos[1];
+            const z = grabPos[2] + Math.sin(angle) * grabSize;
+            grabVerts.push(x, y, z);
+            grabNorms.push(0, 1, 0);
+            grabTex.push((Math.cos(angle) + 1) / 2, (Math.sin(angle) + 1) / 2);
+        }
+        grabVerts.push(grabPos[0], grabPos[1], grabPos[2]);
+        grabNorms.push(0, 1, 0);
+        grabTex.push(0.5, 0.5);
+        
+        for (let i = 0; i < 12; i++) {
+            grabInds.push(12, i, (i + 1) % 12);
+        }
+        
+        const grabPosBuf = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, grabPosBuf);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(grabVerts), gl.DYNAMIC_DRAW);
+        gl.enableVertexAttribArray(aPosition);
+        gl.vertexAttribPointer(aPosition, 3, gl.FLOAT, false, 0, 0);
+        
+        const grabNormBuf = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, grabNormBuf);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(grabNorms), gl.DYNAMIC_DRAW);
+        gl.enableVertexAttribArray(aNormal);
+        gl.vertexAttribPointer(aNormal, 3, gl.FLOAT, false, 0, 0);
+        
+        const grabTexBuf = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, grabTexBuf);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(grabTex), gl.DYNAMIC_DRAW);
+        gl.enableVertexAttribArray(aTexCoord);
+        gl.vertexAttribPointer(aTexCoord, 2, gl.FLOAT, false, 0, 0);
+        
+        gl.disable(gl.DEPTH_TEST);
+        gl.drawArrays(gl.TRIANGLE_FAN, 0, 13);
+        gl.enable(gl.DEPTH_TEST);
+        
+        gl.deleteBuffer(grabPosBuf);
+        gl.deleteBuffer(grabNormBuf);
+        gl.deleteBuffer(grabTexBuf);
+        
+        gl.disable(gl.BLEND);
+    }
+}
+
+requestAnimationFrame(animate);
+    </script>
+</body>
+</html>

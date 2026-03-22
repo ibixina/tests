@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Naked-Eye 3D Illusion</title>
+        <style>
+            /* --- 1. THE "NORMAL" WEBSITE LAYOUT --- */
+            body {
+                font-family:
+                    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                    Helvetica, Arial, sans-serif;
+                background-color: #f8f9fa;
+                color: #333;
+                margin: 0;
+                padding: 40px 20px;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+            }
+
+            .article-container {
+                max-width: 600px;
+                width: 100%;
+            }
+
+            h1 {
+                font-size: 2.5rem;
+                margin-bottom: 10px;
+            }
+            p {
+                line-height: 1.6;
+                color: #555;
+                font-size: 1.1rem;
+                margin-bottom: 20px;
+            }
+
+            /* --- 2. THE 3D STAGE --- */
+            #canvas-container {
+                position: fixed; /* Locks it to the screen */
+                top: 0;
+                left: 0;
+                width: 100vw; /* 100% of the viewport width */
+                height: 100vh; /* 100% of the viewport height */
+                pointer-events: none; /* CRITICAL: Lets you click the button underneath! */
+                z-index: 10; /* Puts the 3D scene on top of the text */
+            }
+
+            /* --- 3. THE TRIGGER BUTTON --- */
+            .controls {
+                display: flex;
+                justify-content: center;
+                margin-bottom: 30px;
+            }
+
+            button {
+                background-color: #000;
+                color: #fff;
+                border: none;
+                padding: 12px 24px;
+                font-size: 1.1rem;
+                font-weight: bold;
+                border-radius: 8px;
+                cursor: pointer;
+                transition:
+                    transform 0.2s,
+                    background-color 0.2s;
+            }
+
+            button:hover {
+                background-color: #333;
+                transform: scale(1.05);
+            }
+        </style>
+    </head>
+    <body>
+        <div class="article-container">
+            <h1>The Future of Immersive Web</h1>
+            <p>
+                Before the introduction of WebGL, creating true volumetric depth
+                on a web page was impossible. We relied on simple CSS shadows
+                and flat images. Today, we can render complex, ray-traced
+                lighting directly in the browser.
+            </p>
+            <p>
+                Interact with the frame below. Move your mouse to see the
+                physical depth of the room, then trigger the illusion to break
+                the boundaries of the screen.
+            </p>
+
+            <div id="canvas-container"></div>
+
+            <div class="controls">
+                <button id="toggle-btn">Toggle 3D Pop-Out</button>
+            </div>
+
+            <p>
+                Notice how your brain instantly recalculates the position of the
+                object the moment it overlaps the white border. The contrast
+                between the standard text and the volumetric model is what makes
+                the forced perspective successful.
+            </p>
+        </div>
+
+        <script type="module">
+            import * as THREE from "https://unpkg.com/three@0.160.0/build/three.module.js";
+
+            // --- SETUP SCENE, CAMERA, RENDERER ---
+            const container = document.getElementById("canvas-container");
+            const scene = new THREE.Scene();
+
+            // Find the camera setup in the <script> section
+            const camera = new THREE.PerspectiveCamera(
+                45,
+                container.clientWidth / container.clientHeight,
+                0.1,
+                100,
+            );
+
+            // INCREASE the Z-position from 8 to something like 11 or 12
+            camera.position.set(0, 0, 11);
+
+            const renderer = new THREE.WebGLRenderer({
+                antialias: true,
+                alpha: true,
+            });
+            renderer.setSize(container.clientWidth, container.clientHeight);
+            renderer.shadowMap.enabled = true; // Crucial for the realistic shadows
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            container.appendChild(renderer.domElement);
+
+            // --- BUILD THE "FRAME" (The boundary to break) ---
+            // We place this exactly at the front opening of the room (Z = 2)
+            const frameMaterial = new THREE.MeshBasicMaterial({
+                color: 0xffffff,
+            });
+            const frameThickness = 0.2;
+
+            const topFrame = new THREE.Mesh(
+                new THREE.BoxGeometry(6.4, frameThickness, frameThickness),
+                frameMaterial,
+            );
+            topFrame.position.set(0, 2.1, 2);
+            scene.add(topFrame);
+
+            const bottomFrame = new THREE.Mesh(
+                new THREE.BoxGeometry(6.4, frameThickness, frameThickness),
+                frameMaterial,
+            );
+            bottomFrame.position.set(0, -2.1, 2);
+            scene.add(bottomFrame);
+
+            const leftFrame = new THREE.Mesh(
+                new THREE.BoxGeometry(frameThickness, 4.4, frameThickness),
+                frameMaterial,
+            );
+            leftFrame.position.set(-3.1, 0, 2);
+            scene.add(leftFrame);
+
+            const rightFrame = new THREE.Mesh(
+                new THREE.BoxGeometry(frameThickness, 4.4, frameThickness),
+                frameMaterial,
+            );
+            rightFrame.position.set(3.1, 0, 2);
+            scene.add(rightFrame);
+
+            // --- THE SUBJECT (The 3D Object) ---
+            const knotGeometry = new THREE.TorusKnotGeometry(
+                0.8,
+                0.25,
+                128,
+                32,
+            );
+            const knotMaterial = new THREE.MeshStandardMaterial({
+                color: 0xff416c,
+                roughness: 0.2,
+                metalness: 0.8,
+            });
+            const subject = new THREE.Mesh(knotGeometry, knotMaterial);
+            subject.castShadow = true; // Let it cast shadows on the room
+            scene.add(subject);
+
+            // --- LIGHTING ---
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            scene.add(ambientLight);
+
+            const dirLight = new THREE.DirectionalLight(0xffffff, 2);
+            dirLight.position.set(2, 5, 5);
+            dirLight.castShadow = true;
+            dirLight.shadow.mapSize.width = 1024;
+            dirLight.shadow.mapSize.height = 1024;
+            scene.add(dirLight);
+
+            // --- INTERACTION LOGIC (The Illusion) ---
+            let isPoppedOut = false;
+            let targetZ = 0; // Starts inside the room
+            let targetScale = 1;
+
+            document
+                .getElementById("toggle-btn")
+                .addEventListener("click", () => {
+                    isPoppedOut = !isPoppedOut;
+                    // If popped out, move past the frame (Z=2) to Z=3.5, and scale up
+                    targetZ = isPoppedOut ? 3.5 : 0;
+                    targetScale = isPoppedOut ? 1.3 : 1;
+                });
+
+            // Parallax Mouse Tracking (Updated for Full Screen)
+            let mouseX = 0;
+            let mouseY = 0;
+
+            // Reset camera when mouse leaves
+            container.addEventListener("mouseleave", () => {
+                mouseX = 0;
+                mouseY = 0;
+            });
+
+            // --- ANIMATION LOOP ---
+            function animate() {
+                requestAnimationFrame(animate);
+
+                // 1. Constantly rotate the subject
+                subject.rotation.x += 0.01;
+                subject.rotation.y += 0.01;
+
+                // 2. Smoothly interpolate (lerp) the Z-position and Scale for the pop-out effect
+                subject.position.z += (targetZ - subject.position.z) * 0.05;
+                subject.scale.setScalar(
+                    subject.scale.x + (targetScale - subject.scale.x) * 0.05,
+                );
+
+                // 3. Smoothly move the camera based on mouse position (Parallax)
+                // This proves to the brain that the box has physical depth
+                camera.position.x += (mouseX * 1.5 - camera.position.x) * 0.05;
+                camera.position.y += (mouseY * 1.5 - camera.position.y) * 0.05;
+                camera.lookAt(0, 0, 0);
+
+                renderer.render(scene, camera);
+            }
+
+            // Handle window resizing
+            window.addEventListener("resize", () => {
+                camera.aspect = container.clientWidth / container.clientHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(container.clientWidth, container.clientHeight);
+            });
+
+            // Start the loop
+            animate();
+        </script>
+    </body>
+</html>
